@@ -75,7 +75,8 @@ dependencies {
     fapi(
         "fabric-lifecycle-events-v1",
         "fabric-resource-loader-v0",
-        "fabric-command-api-v2"
+        "fabric-command-api-v2",
+        "fabric-networking-api-v1"
     )
 
     if (deps["poly_lib"].isNotEmpty()) {

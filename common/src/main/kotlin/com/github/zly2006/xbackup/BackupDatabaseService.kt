@@ -388,6 +388,17 @@ class BackupDatabaseService(
         require(files.size == entries.size)
         Path("debug-backup.json").writeText(Json.encodeToString(files.toList()))
         log.info("[X Backup] Backed up ${entries.size} files, ${newEntries.size} new, ${entries.size - newEntries.size} files reused")
+        if (config.discardEmptyBackups && !temporary && newEntries.isEmpty()) {
+            return BackupResult(
+                success = false,
+                message = "EMPTY_BACKUP",
+                backId = -1,
+                totalSize = entries.sumOf { it.size },
+                compressedSize = entries.sumOf { it.zippedSize },
+                addedSize = 0,
+                millis = System.currentTimeMillis() - timeStart,
+            )
+        }
         val backup = dbQuery {
             val backup = BackupTable.insert {
                 it[size] = entries.sumOf { it.size }

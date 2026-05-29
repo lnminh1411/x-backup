@@ -1,6 +1,8 @@
 package com.github.zly2006.xbackup
 
 import com.github.zly2006.xbackup.Utils.broadcast
+import com.github.zly2006.xbackup.Utils.save
+import com.github.zly2006.xbackup.Utils.setAutoSaving
 import com.github.zly2006.xbackup.api.XBackupApi
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType
 import io.ktor.client.*
@@ -15,6 +17,7 @@ import kotlinx.serialization.json.*
 import net.fabricmc.api.ModInitializer
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
+import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents
 import net.fabricmc.loader.api.FabricLoader
 import net.minecraft.client.Minecraft
 import net.minecraft.network.protocol.game.ClientboundTabListPacket
@@ -40,7 +43,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.0.0"
+    const val MOD_VERSION = "1.1.0"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -65,6 +68,7 @@ object XBackup : ModInitializer {
     var blockPlayerJoin = false
     var disableSaving = false
     var disableWatchdog = false
+    var playersLoggedOnSinceLastBackup = false
 
     enum class BackgroundState {
         IDLE, UNKNOWN, SCHEDULED_BACKUP, PRUNING, STOPPED
@@ -136,6 +140,9 @@ object XBackup : ModInitializer {
         CommandRegistrationCallback.EVENT.register(CommandRegistrationCallback { dispatcher, _, _ ->
             Commands.register(dispatcher)
         })
+        ServerPlayConnectionEvents.JOIN.register { _, _, _ ->
+            playersLoggedOnSinceLastBackup = true
+        }
         ServerLifecycleEvents.SERVER_STARTING.register {
             restoring = false
         }
@@ -235,10 +242,26 @@ object XBackup : ModInitializer {
                 if (config.backupInterval > 0) {
                     backgroundState = BackgroundState.SCHEDULED_BACKUP
                     if (backup == null || (System.currentTimeMillis() - backup.created) / 1000 > config.backupInterval) {
+                        if (config.pauseAutomaticBackupsWithoutPlayers) {
+                            val playersOnline = server.playerList.playerCount > 0
+                            if (playersOnline) {
+                                playersLoggedOnSinceLastBackup = true
+                            }
+                            if (!playersLoggedOnSinceLastBackup) {
+                                log.info("Skipping scheduled backup because no players logged on since the last backup.")
+                                delay(10000)
+                                continue
+                            }
+                        }
                         try {
                             isBusy = true
-                            server.broadcast(Utils.translate("message.xb.running_scheduled_backup"))
-                            val (_, _, backId, totalSize, compressedSize, addedSize, millis) = service.createBackup(
+                            withContext(server.asCoroutineDispatcher()) {
+                                server.broadcast(Utils.translate("message.xb.running_scheduled_backup"))
+                                server.save()
+                                server.setAutoSaving(false)
+                                disableSaving = true
+                            }
+                            val result = service.createBackup(
                                 server.getWorldPath(LevelResource.ROOT).toAbsolutePath(),
                                 I18n["message.xb.scheduled_backup"],
                                 metadata = buildJsonObject {
@@ -247,41 +270,55 @@ object XBackup : ModInitializer {
                                     put("mod_ver", MOD_VERSION)
                                 }
                             )
-                            val localBackup = File("x_backup.db.back")
-                            localBackup.delete()
-                            try {
-                                (service.database.connector().connection as? SQLiteConnection)?.createStatement()
-                                    ?.execute("VACUUM INTO '$localBackup';")
-                            } catch (e: Exception) {
-                                log.error("Error backing up database", e)
-                            }
-                            Files.move(
-                                localBackup.toPath(),
-                                Path("xb.backups")
-                                    .resolve(backId.toString())
-                                    .resolve("x_backup.db")
-                                    .createParentDirectories(),
-                                StandardCopyOption.REPLACE_EXISTING
-                            )
-                            // delete old backups in ./xb.backups, keep the latest 5
-                            val backups = Path("xb.backups").listDirectoryEntries().filter { it.isDirectory() }
-                            backups.sortedByDescending { it.getLastModifiedTime().toMillis() }
-                                .drop(5)
-                                .forEach { it.toFile().deleteRecursively() }
-                            server.broadcast(
-                                Utils.translate(
-                                    "message.xb.scheduled_backup_finished",
-                                    backupIdText(backId),
-                                    sizeText(totalSize),
-                                    sizeText(compressedSize),
-                                    sizeText(addedSize),
-                                    millis
+                            if (result.success) {
+                                val localBackup = File("x_backup.db.back")
+                                localBackup.delete()
+                                try {
+                                    (service.database.connector().connection as? SQLiteConnection)?.createStatement()
+                                        ?.execute("VACUUM INTO '$localBackup';")
+                                } catch (e: Exception) {
+                                    log.error("Error backing up database", e)
+                                }
+                                Files.move(
+                                    localBackup.toPath(),
+                                    Path("xb.backups")
+                                        .resolve(result.backId.toString())
+                                        .resolve("x_backup.db")
+                                        .createParentDirectories(),
+                                    StandardCopyOption.REPLACE_EXISTING
                                 )
-                            )
+                                // delete old backups in ./xb.backups, keep the latest 5
+                                val backups = Path("xb.backups").listDirectoryEntries().filter { it.isDirectory() }
+                                backups.sortedByDescending { it.getLastModifiedTime().toMillis() }
+                                    .drop(5)
+                                    .forEach { it.toFile().deleteRecursively() }
+                                server.broadcast(
+                                    Utils.translate(
+                                        "message.xb.scheduled_backup_finished",
+                                        backupIdText(result.backId),
+                                        sizeText(result.totalSize),
+                                        sizeText(result.compressedSize),
+                                        sizeText(result.addedSize),
+                                        result.millis
+                                    )
+                                )
+                                playersLoggedOnSinceLastBackup = false
+                            } else {
+                                if (result.message == "EMPTY_BACKUP") {
+                                    log.info("Scheduled backup cancelled: No changes detected.")
+                                    playersLoggedOnSinceLastBackup = false
+                                } else {
+                                    log.error("Scheduled backup failed: ${result.message}")
+                                }
+                            }
                         } catch (e: Exception) {
                             log.error("Crontab backup failed", e)
                         } finally {
                             isBusy = false
+                            withContext(server.asCoroutineDispatcher()) {
+                                disableSaving = false
+                                server.setAutoSaving(true)
+                            }
                         }
                     }
                 }

@@ -313,26 +313,37 @@ object Commands {
                                 it.source.server.save()
                                 it.source.server.setAutoSaving(false)
                                 XBackup.disableSaving = true
-                                val result = XBackup.service.createBackup(
-                                    path,
-                                    "$comment by ${it.source.textName}",
-                                    temporary = false,
-                                    buildJsonObject {
-                                        put("mod_ver", XBackup.MOD_VERSION)
-                                        put("source", it.source.textName)
-                                    }
-                                )
-                                it.source.server.broadcast(
-                                    Utils.translate(
-                                        "command.xb.backup_finished",
-                                        backupIdText(result.backId), it.source.textName, sizeText(result.totalSize),
-                                        sizeText(result.compressedSize), sizeText(result.addedSize), result.millis
+                                try {
+                                    val result = XBackup.service.createBackup(
+                                        path,
+                                        "$comment by ${it.source.textName}",
+                                        temporary = false,
+                                        buildJsonObject {
+                                            put("mod_ver", XBackup.MOD_VERSION)
+                                            put("source", it.source.textName)
+                                        }
                                     )
-                                )
-                                XBackup.disableSaving = false
-                                it.source.server.setAutoSaving(true)
-                                val id = result.backId
-                                // Cloud upload removed in 0.5.0
+                                    if (result.success) {
+                                        it.source.server.broadcast(
+                                            Utils.translate(
+                                                "command.xb.backup_finished",
+                                                backupIdText(result.backId), it.source.textName, sizeText(result.totalSize),
+                                                sizeText(result.compressedSize), sizeText(result.addedSize), result.millis
+                                            )
+                                        )
+                                        XBackup.playersLoggedOnSinceLastBackup = false
+                                    } else {
+                                        if (result.message == "EMPTY_BACKUP") {
+                                            it.source.sendFailure(Utils.translate("command.xb.backup_cancelled_empty"))
+                                            XBackup.playersLoggedOnSinceLastBackup = false
+                                        } else {
+                                            it.source.sendFailure(Component.literal("Backup failed: ${result.message}"))
+                                        }
+                                    }
+                                } finally {
+                                    XBackup.disableSaving = false
+                                    it.source.server.setAutoSaving(true)
+                                }
                             }
                             1
                         }
@@ -610,11 +621,14 @@ object Commands {
             it.source.server.save()
             it.source.server.setAutoSaving(false)
             XBackup.disableSaving = true
-            runBlocking {
-                service.createBackup(path.normalize(), "Auto-backup before restoring to #${backup.id}", true)
+            try {
+                runBlocking {
+                    service.createBackup(path.normalize(), "Auto-backup before restoring to #${backup.id}", true)
+                }
+            } finally {
+                it.source.server.setAutoSaving(true)
+                XBackup.disableSaving = false
             }
-            it.source.server.setAutoSaving(true)
-            XBackup.disableSaving = false
         }
 
         // Note: switch to IO thread context

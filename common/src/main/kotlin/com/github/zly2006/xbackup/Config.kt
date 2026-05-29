@@ -113,4 +113,11 @@ class Config {
 
     @SerialName("operator_permission_level")
     var operatorPermissionLevel = 2
+
+    @SerialName("pause_automatic_backups_without_players")
+    var pauseAutomaticBackupsWithoutPlayers = true
+
+    @SerialName("discard_empty_backups")
+    var discardEmptyBackups = true
 }
+

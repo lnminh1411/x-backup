@@ -55,6 +55,18 @@ object ConfigGui {
                         .binding(true, { config.backupBeforeRestore }, { config.backupBeforeRestore = it })
                         .controller { opt -> TickBoxControllerBuilder.create(opt) }
                         .build())
+                    .option(Option.createBuilder<Boolean>()
+                        .name(Component.literal("Pause Backups Without Players"))
+                        .description(OptionDescription.of(Component.literal("Pause scheduled backups when there are no players on the server.")))
+                        .binding(true, { config.pauseAutomaticBackupsWithoutPlayers }, { config.pauseAutomaticBackupsWithoutPlayers = it })
+                        .controller { opt -> TickBoxControllerBuilder.create(opt) }
+                        .build())
+                    .option(Option.createBuilder<Boolean>()
+                        .name(Component.literal("Discard Empty Backups"))
+                        .description(OptionDescription.of(Component.literal("Discard scheduled and manual backups that don't contain any modified or new files.")))
+                        .binding(true, { config.discardEmptyBackups }, { config.discardEmptyBackups = it })
+                        .controller { opt -> TickBoxControllerBuilder.create(opt) }
+                        .build())
                     .build())
                 .group(OptionGroup.createBuilder()
                     .name(Component.literal("Paths & Exclusions"))
