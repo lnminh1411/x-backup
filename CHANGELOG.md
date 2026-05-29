@@ -1,3 +1,9 @@
+1.0.0
+
+- Removed Onedrive support
+- Added Support for YACL
+- Removed Support for GZIP compression in favor of 
+
 ## 0.3.14
 
 Refactor restart logic. Auto restart is disabled by default now because of

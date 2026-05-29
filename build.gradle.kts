@@ -92,6 +92,8 @@ dependencies {
     add("compileLib", project(":api"))
     add("compileLib", project(":common", configuration = "shadow"))
     compileOnly(project(":compat-fake-source"))
+    implementation("maven.modrinth:yacl:${deps["yacl"]}")
+    compileOnly("maven.modrinth:modmenu:${deps["modmenu"]}")
 }
 
 loom {

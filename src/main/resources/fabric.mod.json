@@ -5,19 +5,31 @@
   "name": "${name}",
   "description": "The advanced backup mod for fabric.",
   "authors": [
-    "zly2006"
+    "zly2006",
+    "lnminh1411"
   ],
   "contact": {
-    "sources": "https://github.com/zly2006/x-backup"
+    "sources": "https://github.com/lnminh1411/x-backup"
   },
   "license": "AGPL-3.0-only",
-  "icon": "assets/x-backup/icon.png",
   "environment": "*",
   "entrypoints": {
     "main": [
       {
         "adapter": "kotlin",
         "value": "com.github.zly2006.xbackup.XBackup"
+      }
+    ],
+    "client": [
+      {
+        "adapter": "kotlin",
+        "value": "com.github.zly2006.xbackup.client.XBackupClient"
+      }
+    ],
+    "modmenu": [
+      {
+        "adapter": "kotlin",
+        "value": "com.github.zly2006.xbackup.client.ModMenuIntegration"
       }
     ]
   },

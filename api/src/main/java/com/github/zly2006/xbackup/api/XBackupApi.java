@@ -38,10 +38,6 @@ public interface XBackupApi {
 
     int backupCount();
 
-    void setCloudStorageProvider(@NotNull CloudStorageProvider provider);
-
-    @NotNull CloudStorageProvider getCloudStorageProvider();
-
     void zipArchive(@NotNull ZipOutputStream stream, @NotNull IBackup backup);
 
     void restoreBackup(@NotNull IBackup backup, @NotNull Path target);

@@ -2,7 +2,6 @@ package com.github.zly2006.xbackup
 
 import com.github.zly2006.xbackup.Utils.broadcast
 import com.github.zly2006.xbackup.api.XBackupApi
-import com.github.zly2006.xbackup.cloud.OnedriveSupport
 import com.mojang.brigadier.exceptions.SimpleCommandExceptionType
 import io.ktor.client.*
 import io.ktor.client.engine.java.Java
@@ -41,7 +40,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "0.4.0"
+    const val MOD_VERSION = "1.0.0"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -185,56 +184,8 @@ object XBackup : ModInitializer {
                 )
             }
             XBackupApi.setInstance(service)
-            if (config.cloudBackupToken != null) {
-                val httpClient = HttpClient(Java) {
-                    followRedirects = true
-                    engine {
-                        config {
-                            this.followRedirects(NORMAL)
-                        }
-                    }
-
-                    install(ContentNegotiation) {
-                        json(this@XBackup.json)
-                    }
-                    install(HttpRedirect)
-                    install(HttpTimeout) {
-                        requestTimeoutMillis = 60_000
-                        connectTimeoutMillis = 60_000
-                        socketTimeoutMillis = 60_000
-                    }
-                    install(UserAgent) {
-                        agent = "XBackup/$MOD_VERSION RedenMC/0.1-x-backup"
-                    }
-                    install(HttpRequestRetry) {
-                        retryOnServerErrors(1)
-                    }
-                }
-                service.cloudStorageProvider = OnedriveSupport(config, httpClient)
-            }
             if (!config.mirrorMode) {
                 startCrontabJob(server)
-                if (config.cloudBackupToken != null && FabricLoader.getInstance().isDevelopmentEnvironment) {
-                    GlobalScope.launch(server.asCoroutineDispatcher()) {
-                        while (XBackup.server?.running == true) {
-                            delay(1000)
-                            val cs = service.cloudStorageProvider
-                            if (service.activeTaskProgress != -1 &&
-                                (cs.bytesSentLastSecond > 0 || cs.bytesReceivedLastSecond > 0)
-                            ) {
-                                runCatching {
-                                    server.playerList.broadcastAll(
-                                        ClientboundTabListPacket(
-                                            Component.empty(),
-                                            Component.literal("X Backup Network Stat\n")
-                                                .append(Commands.networkStatsText())
-                                        )
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
             }
         }
         ServerLifecycleEvents.SERVER_STOPPING.register {

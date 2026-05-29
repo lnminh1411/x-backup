@@ -1,6 +1,6 @@
 # X Backup
 
-[简体中文](https://github.com/zly2006/x-backup/blob/stonecutter/README_zh.md) | English
+[简体中文](https://github.com/lnminh1411/x-backup/blob/stonecutter/README_zh.md) | English
 
 The advanced backup mod for fabric.
 
@@ -11,7 +11,6 @@ The advanced backup mod for fabric.
 - 🔄Seamless Restoring: Automatically restarts the server after restoring, allowing for a seamless experience.
 - ✨Regional Restoring: Restore only the chunks within a specified range, **Players outside the range will not be affected**.
 - 🛡️Flexible Support: Designed to support both servers and clients, providing a versatile solution for all your backup needs.
-- ☁️Automatic Cloud Backup: Effortlessly back up your data to the cloud, with support for Microsoft OneDrive, ensuring your information is safe and accessible from anywhere.
 
 ## Usage
 

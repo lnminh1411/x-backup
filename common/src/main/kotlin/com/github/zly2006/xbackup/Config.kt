@@ -20,7 +20,7 @@ class Config {
         )
 
         @SerialName("keep_temporary")
-        val keepTemporary = "2d"
+        var keepTemporary = "2d"
 
         fun temporaryKeepPolicy(): Long {
             return keepTemporary.toMillis()
@@ -67,6 +67,12 @@ class Config {
         }
     }
 
+    @Serializable
+    enum class CompressionAlgorithm {
+        @SerialName("zstd") ZSTD,
+        @SerialName("lz4") LZ4
+    }
+
     @SerialName("ignored_files")
     val ignoredFiles: List<String> = listOf(
         "session.lock",
@@ -79,10 +85,7 @@ class Config {
     )
 
     @SerialName("blob_path")
-    val blobPath = "blob"
-
-    @SerialName("independent_blobs")
-    val independentBlobs = false
+    var blobPath = "blob"
 
     @SerialName("backup_interval")
     var backupInterval = 10800
@@ -102,6 +105,12 @@ class Config {
     @SerialName("prune")
     val pruneConfig = PruneConfig()
 
-    @SerialName("cloud_backup_token")
-    var cloudBackupToken: String? = null
+    @SerialName("compression_algorithm")
+    var compressionAlgorithm: CompressionAlgorithm = CompressionAlgorithm.ZSTD
+
+    @SerialName("compression_level")
+    var compressionLevel = 3
+
+    @SerialName("operator_permission_level")
+    var operatorPermissionLevel = 2
 }

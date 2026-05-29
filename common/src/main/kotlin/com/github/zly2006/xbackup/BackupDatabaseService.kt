@@ -33,7 +33,7 @@ class BackupDatabaseService(
     val databaseDir: Path,
     val database: Database,
     private val blobDir: Path,
-    config: Config
+    private val config: Config
 ) : CoroutineScope, XBackupKotlinAsyncApi {
     private val log = LoggerFactory.getLogger("XBackup")!!
     @OptIn(DelicateCoroutinesApi::class)
@@ -64,14 +64,32 @@ class BackupDatabaseService(
         }
     }
 
-    private lateinit var oneDriveService: CloudStorageProvider
-
-    override fun setCloudStorageProvider(provider: CloudStorageProvider) {
-        oneDriveService = provider
-    }
-
-    override fun getCloudStorageProvider(): CloudStorageProvider {
-        return oneDriveService
+    fun wrapOutputStream(outputStream: java.io.OutputStream): java.io.OutputStream {
+        return when (config.compressionAlgorithm) {
+            Config.CompressionAlgorithm.ZSTD -> {
+                val zstdLevel = when (config.compressionLevel) {
+                    1 -> 1
+                    2 -> 3
+                    3 -> 7
+                    4 -> 12
+                    5 -> 19
+                    else -> 3
+                }
+                com.github.luben.zstd.ZstdOutputStream(outputStream, zstdLevel)
+            }
+            Config.CompressionAlgorithm.LZ4 -> {
+                val lz4Factory = net.jpountz.lz4.LZ4Factory.fastestInstance()
+                val compressor = when (config.compressionLevel) {
+                    1 -> lz4Factory.fastCompressor()
+                    2 -> lz4Factory.highCompressor(3)
+                    3 -> lz4Factory.highCompressor(6)
+                    4 -> lz4Factory.highCompressor(9)
+                    5 -> lz4Factory.highCompressor(17)
+                    else -> lz4Factory.fastCompressor()
+                }
+                net.jpountz.lz4.LZ4BlockOutputStream(outputStream, 1 shl 16, compressor)
+            }
+        }
     }
     
     private val ignoredFiles = setOf(
@@ -151,7 +169,7 @@ class BackupDatabaseService(
                 return when (compress) {
                     0 -> blob.inputStream()
                     1 -> withContext(Dispatchers.IO) {
-                        GZIPInputStream(blob.inputStream())
+                        net.jpountz.lz4.LZ4BlockInputStream(blob.inputStream())
                     }
                     2 -> ZipInputStream(blob.inputStream()).use {
                         @Suppress("ControlFlowWithEmptyBody")
@@ -161,6 +179,9 @@ class BackupDatabaseService(
                             }) {
                         }
                         it
+                    }
+                    3 -> withContext(Dispatchers.IO) {
+                        com.github.luben.zstd.ZstdInputStream(blob.inputStream())
                     }
 
                     else -> error("Unknown compress type: $compress")
@@ -266,7 +287,7 @@ class BackupDatabaseService(
                                 }
                             }
                         }
-                        val gzip = sourceFile.isFile && sourceFile.length() > 1024
+                        val shouldCompress = sourceFile.isFile && sourceFile.length() > 1024
                         var md5 = ""
                         var zippedSize: Long
                         if (sourceFile.isFile) {
@@ -277,8 +298,8 @@ class BackupDatabaseService(
                                 tempBlob.createParentDirectories()
                                 val digest = MessageDigest.getInstance("MD5")
                                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                                if (gzip) {
-                                    GZIPOutputStream(tempBlob.outputStream().buffered()).use { output ->
+                                if (shouldCompress) {
+                                    this@BackupDatabaseService.wrapOutputStream(tempBlob.outputStream().buffered()).use { output ->
                                         sourceFile.inputStream().buffered().use { input ->
                                             var read: Int
                                             while (input.read(buffer).also { read = it } > 0) {
@@ -351,7 +372,9 @@ class BackupDatabaseService(
                                 it[this.isDirectory] = sourceFile.isDirectory
                                 it[this.hash] = md5
                                 it[this.zippedSize] = zippedSize
-                                it[this.compress] = if (gzip) 1 else 0
+                                it[this.compress] = if (shouldCompress) {
+                                    if (this@BackupDatabaseService.config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 1 else 3
+                                } else 0
                             }.resultedValues!!.single().toBackupEntry()
                             newEntries.add(backupEntry)
                             backupEntry
@@ -512,13 +535,18 @@ class BackupDatabaseService(
                                     MessageDigest.getInstance("MD5").digest(path.toFile().inputStream().readBytes())
                                         .joinToString("") { "%02x".format(it) }
                                 if (checkAgain != it.value.hash) {
-                                    val bytes = GZIPInputStream(blob.toFile().inputStream().buffered()).readBytes()
-                                    val gzipMd5 = MessageDigest.getInstance("MD5").digest(bytes)
+                                    val decompressedStream = when (it.value.compress) {
+                                        1 -> net.jpountz.lz4.LZ4BlockInputStream(blob.toFile().inputStream().buffered())
+                                        3 -> com.github.luben.zstd.ZstdInputStream(blob.toFile().inputStream().buffered())
+                                        else -> blob.toFile().inputStream().buffered()
+                                    }
+                                    val bytes = decompressedStream.use { stream -> stream.readBytes() }
+                                    val expectedMd5 = MessageDigest.getInstance("MD5").digest(bytes)
                                         .joinToString("") { "%02x".format(it) }
                                     log.error(
-                                        "File hash mismatch, file: $path, expected: ${it.value.hash}, actual: $checkAgain, gzip: $gzipMd5" +
-                                                if (it.value.hash == gzipMd5 && gzipMd5 != checkAgain) " (writing file failed?)"
-                                                else if (it.value.hash != gzipMd5 && gzipMd5 == checkAgain) " (bad md5 when creating backup?)"
+                                        "File hash mismatch, file: $path, expected: ${it.value.hash}, actual: $checkAgain, decompressed: $expectedMd5" +
+                                                if (it.value.hash == expectedMd5 && expectedMd5 != checkAgain) " (writing file failed?)"
+                                                else if (it.value.hash != expectedMd5 && expectedMd5 == checkAgain) " (bad md5 when creating backup?)"
                                                 else " (WTF???)"
                                     )
                                     path.writeBytes(bytes)
@@ -676,27 +704,32 @@ class BackupDatabaseService(
             val size = entry.size
             val lastModified = entry.lastModifiedTime.toMillis()
             val isDirectory = entry.isDirectory
-            val zippedSize = entry.compressedSize
-            if (!getBlobFile(hash).exists()) {
-                if (size > 1024) {
-                    getBlobFile(hash).outputStream().use { output ->
+            val shouldCompress = size > 1024
+            val blobFile = getBlobFile(hash)
+            if (!blobFile.exists()) {
+                if (shouldCompress) {
+                    wrapOutputStream(blobFile.outputStream().buffered()).use { output ->
+                        inputStream.copyTo(output)
+                    }
+                } else {
+                    blobFile.outputStream().use { output ->
                         inputStream.copyTo(output)
                     }
                 }
-                else {
-                    getBlobFile(hash).writeBytes(inputStream.readBytes())
-                }
             }
+            val finalZippedSize = if (shouldCompress) blobFile.fileSize() else size
             entries.add(
                 BackupEntry(
                     id,
                     path,
                     size,
-                    zippedSize,
+                    finalZippedSize,
                     lastModified,
                     isDirectory,
                     hash,
-                    if (size > 1024) 1 else 0
+                    if (shouldCompress) {
+                        if (config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 1 else 3
+                    } else 0
                 )
             )
         }

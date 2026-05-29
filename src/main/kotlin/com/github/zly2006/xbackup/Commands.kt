@@ -96,14 +96,7 @@ fun MutableComponent.clickRun(cmd: String) {
 }
 
 object Commands {
-    fun networkStatsText(): MutableComponent {
-        val cloudStorage = XBackup.service.cloudStorageProvider
-        return Component.empty().apply {
-            append(Component.literal("⏶" + sizeToString(cloudStorage.bytesSentLastSecond) + "/s"))
-            append(" ")
-            append(Component.literal("⏷" + sizeToString(cloudStorage.bytesReceivedLastSecond) + "/s"))
-        }
-    }
+    // networkStatsText removed in 0.5.0
 
     private fun getBackup(id: Int): IBackup {
         return XBackup.service.getBackup(id) ?: throw SimpleCommandExceptionType(
@@ -127,8 +120,7 @@ object Commands {
                             )
                         )
                         if (XBackup.service.activeTaskProgress != -1) {
-                            source.send(Component.literal("云备份任务：${XBackup.service.activeTask} ${XBackup.service.activeTaskProgress}%"))
-                            source.send(networkStatsText())
+                            source.send(Component.literal("Backup Task: ${XBackup.service.activeTask} ${XBackup.service.activeTaskProgress}%"))
                         }
                     }
                     executes {
@@ -340,24 +332,7 @@ object Commands {
                                 XBackup.disableSaving = false
                                 it.source.server.setAutoSaving(true)
                                 val id = result.backId
-                                if (XBackup.config.cloudBackupToken != null) {
-                                    XBackup.service.launch(Dispatchers.Default) {
-                                        it.source.server.broadcast(
-                                            Utils.translate(
-                                                "command.xb.uploading_backup",
-                                                backupIdText(id)
-                                            )
-                                        )
-                                        XBackup.isBusy = false
-                                        XBackup.service.cloudStorageProvider.uploadBackup(XBackup.service, id)
-                                        it.source.server.broadcast(
-                                            Utils.translate(
-                                                "command.xb.backup_uploaded",
-                                                backupIdText(id)
-                                            )
-                                        )
-                                    }
-                                }
+                                // Cloud upload removed in 0.5.0
                             }
                             1
                         }
@@ -490,45 +465,7 @@ object Commands {
                             1
                         }
                     }
-                    literal("upload") {
-                        argument("id", IntegerArgumentType.integer(1)).executes {
-                            val id = IntegerArgumentType.getInteger(it, "id")
-                            val backup = getBackup(id)
-                            if (backup.cloudBackupUrl != null) {
-                                it.source.send(Utils.translate("command.xb.backup_already_uploaded", backupIdText(id)))
-                                return@executes 0
-                            }
-                            XBackup.ensureNotBusy(Dispatchers.IO) {
-                                it.source.send(Utils.translate("command.xb.uploading_backup", backupIdText(id)))
-                                XBackup.isBusy = false
-                                val result =
-                                    XBackup.service.cloudStorageProvider.uploadBackup(XBackup.service, backup.id)
-                                it.source.send(Utils.translate("command.xb.backup_uploaded", backupIdText(id)))
-                            }
-                            1
-                        }
-                    }
-                    literal("download") {
-                        argument("id", IntegerArgumentType.integer(1)).executes {
-                            val id = IntegerArgumentType.getInteger(it, "id")
-                            val backup = getBackup(id)
-                            XBackup.ensureNotBusy {
-                                val total = backup.entries.count { !it.isDirectory }
-                                var downloaded = 0
-                                backup.entries.filter { !it.isDirectory }.forEach {
-                                    it.getInputStream(XBackup.service)
-                                    require(XBackup.service.getBlobFile(it.hash).fileSize() == it.zippedSize) {
-                                        "$it is not fully uploaded"
-                                    }
-                                    downloaded++
-                                    XBackup.service.activeTaskProgress = 100 * downloaded / total
-                                }
-                                it.source.send(Component.keybind("Debug: Downloaded backup $id"))
-                                1
-                            }
-                            1
-                        }
-                    }
+                    // upload and download debug commands removed in 0.5.0
                     literal("export") {
                         argument("id", IntegerArgumentType.integer(1)).executes {
                             val id = IntegerArgumentType.getInteger(it, "id")
@@ -722,16 +659,17 @@ object Commands {
     }
 
     private fun checkPermission(perm: String, defaultLevel: Int = 2): (CommandSourceStack) -> Boolean = { source ->
+        val requiredLevel = if (defaultLevel == 0) 0 else XBackup.config.operatorPermissionLevel
         try {
             // Call fabric-permissions API, but it might not be available
-            Permissions.check(source, perm, defaultLevel)
+            Permissions.check(source, perm, requiredLevel)
         } catch (e: NoClassDefFoundError) {
             // If the API is not available, just return true
             val permission = when {
-                defaultLevel <= 0 -> null
-                defaultLevel <= 1 -> PermissionLevel.MODERATORS
-                defaultLevel <= 2 -> PermissionLevel.GAMEMASTERS
-                defaultLevel <= 3 -> PermissionLevel.ADMINS
+                requiredLevel <= 0 -> null
+                requiredLevel <= 1 -> PermissionLevel.MODERATORS
+                requiredLevel <= 2 -> PermissionLevel.GAMEMASTERS
+                requiredLevel <= 3 -> PermissionLevel.ADMINS
                 else -> PermissionLevel.OWNERS
             }
             permission == null || source.permissions().hasPermission(Permission.HasCommandLevel(permission))
