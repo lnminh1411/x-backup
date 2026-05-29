@@ -20,6 +20,7 @@
 - Removed Onedrive support
 - Added Support for YACL
 - Removed Support for GZIP compression in favor of LZ4 and Zstd
+- Moved to branch 26.1.2-renewed. This branch is now separated from just maintaining and focusing on implementing new features and refining the mod.
 
 ## 0.4.0
 - Updated to 26.1.2. No new features yet.
