@@ -1,8 +1,6 @@
 # X Backup
 
-[简体中文](https://github.com/lnminh1411/x-backup/blob/stonecutter/README_zh.md) | English
-
-The advanced backup mod for fabric.
+The advanced backup mod for Fabric.
 
 ## Advantages
 
@@ -96,33 +94,29 @@ If you want to stop the server and restore the backup, you can use the `--stop` 
 
 ### Cleaning Up Unnecessary Backups
 
-The mod also provides an automatic cleanup feature for old backups. You can set the `keep_policy` in the configuration file, for example:
+The mod also provides an automatic cleanup feature for old backups. You can configure the retention policy in the configuration GUI under "Retention & Pruning" or directly in the configuration file:
 
 ```json
 {
   "prune": {
     "enabled": false,
-    "keep_policy": {
-      "1d": "30m",
-      "1w": "6h",
-      "1M": "1d",
-      "1y": "1w",
-      "2y": "1M"
-    }
+    "keep_last": 5,
+    "keep_daily": 7,
+    "keep_weekly": 4,
+    "keep_monthly": 12
   }
 }
 ```
 
 This configuration means:
-- Keep backups every 30 minutes for the last 1 day
-- Keep backups every 6 hours for the last 1 week
-- Keep daily backups for the last 1 month
-- Keep weekly backups for the last 1 year
-- Keep monthly backups for the last 2 years
+- **Keep Last**: Keeps the `5` most recent backups regardless of age.
+- **Keep Daily**: Keeps the latest backup of each day for the last `7` days.
+- **Keep Weekly**: Keeps the latest backup of each week for the last `4` weeks.
+- **Keep Monthly**: Keeps the latest backup of each month for the last `12` months.
 
-You can adjust these settings according to your needs.
+You can set any weekly/daily/monthly retention setting to `0` to disable that specific rule. At least 1 backup must be kept under `Keep Last` retention.
 
-When `enabled` is `true`, the mod will automatically clean up backups that do not meet the retention policy. Alternatively, you can manually clean up unnecessary backups using the `/xb prune` command.
+When `enabled` is `true`, the mod will automatically clean up backups that do not meet the retention policy. Alternatively, you can manually clean up backups using the `/xb prune` command.
 
 ### Viewing Backup Information
 
@@ -136,4 +130,6 @@ This command will display detailed information about backup #1, including backup
 
 ## Credits
 
-Some part (GUI) of this mod is based on BackupManager by CreeperHost LTD.
+- **Original Mod**: Created by [zly2006](https://github.com/zly2006) (Original repository: [x-backup](https://github.com/zly2006/x-backup)).
+- **Fork / Renewed Version**: This branch (`26.1.2-renewed`) is a new fork of the original mod, taking on the job to implement new features and refine the mod, not just maintain it.
+- Some parts of the GUI of this mod are based on BackupManager by CreeperHost LTD.

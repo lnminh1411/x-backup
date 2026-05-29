@@ -45,7 +45,7 @@ graph TD
         *   *Content-Addressable Storage (CAS)*: Walks files, computes MD5 hashes, and compresses newly encountered files into the GZIP/ZIP blob store. Relies on `BackupEntryTable`, `BackupTable`, and `BackupEntryBackupTable` to achieve perfect file-level deduplication.
         *   *Restoration*: Compares target directory state with database indexes, deletes un-indexed files, and streams blobs back to disk while checking MD5 integrity.
         *   *GC/Packing*: Bundles files smaller than 50MB into joint Zip files to keep file system inode counts low, and garbage-collects orphaned blobs (`deleteUnusedBlobs`).
-*   [Config.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/Config.kt): Configures backup intervals, cloud API tokens, and lists file exclusions. Implements a custom GFS pruning evaluator.
+*   [Config.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/Config.kt): Configures backup intervals, exclusions, and pruning limits. Implements a calendar-based standard GFS pruning evaluator (Keep Last, Keep Daily, Keep Weekly, Keep Monthly).
 *   [I18n.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/I18n.kt): Resolves translation JSON resources (`en_us.json`, `zh_cn.json`) for chat prompts and command errors.
 *   [Utils.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/Utils.kt): Houses generic backend retry mechanisms and input stream checksum computing utilities (`retry`, `digest`).
 
@@ -59,7 +59,6 @@ graph TD
 *   [RestartUtils.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/RestartUtils.kt): Evaluates Java Runtime Management parameters to generate native restart command lists (Unix/Windows) to hot-restart the JVM.
 *   [Task.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/Task.kt): Interface defining contract for asynchronous operations with status, timing tracking, and progress metrics.
 *   [Utils.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/Utils.kt): Extends `MinecraftServer` and `CommandSourceStack` with inline functions for auto-saving toggle, sync writes execution, system messages, and state reset hooks (`finishRestore`).
-*   [cloud/OnedriveSupport.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/cloud/OnedriveSupport.kt): OneDrive integration using Ktor clients. Supports multi-part chunked uploading and upload resume telemetry.
 *   [gui/BackupsGui.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/gui/BackupsGui.kt): PolyLib modular GUI displaying and managing world backups in the Singleplayer Select World menu. Extracts `icon.png` from backup entries.
 *   [gui/RestoreInfoScreen.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/gui/RestoreInfoScreen.kt): Minecraft screen rendering restoration progress using the modern `extractRenderState(context: GuiGraphicsExtractor, ...)` method. Allows players to reopen the world or close the screen.
 *   [gui/BMStyle.java](file:///e:/x-backup/src/main/java/com/github/zly2006/xbackup/gui/BMStyle.java) & [gui/OptionDialog.java](file:///e:/x-backup/src/main/java/com/github/zly2006/xbackup/gui/OptionDialog.java): Standard theme styling definitions and confirmation dialog wrappers for PolyLib.
@@ -167,15 +166,11 @@ sequenceDiagram
     
     Mod->>Config: pruneConfig.prune(idToTime, now)
     activate Config
-    loop Each Scheduled Backup (Ascending)
-        Config->>Config: Determine retention bucket (e.g., 1d -> 30m interval)
-        alt diff with last kept backup < bucket interval
-            Config->>Config: Mark for pruning (redundant)
-        else
-            Config->>Config: Update oldest kept timestamp (keep backup)
-        end
-    end
-    Config-->>Mod: List of IDs to Prune
+    Config->>Config: 1. Keep Last L (coerceAtLeast 1)
+    Config->>Config: 2. Group by date and keep newest daily for last D days
+    Config->>Config: 3. Group by week and keep newest weekly for last W weeks
+    Config->>Config: 4. Group by month and keep newest monthly for last M months
+    Config-->>Mod: List of IDs to Prune (any backup not kept by rules)
     deactivate Config
 
     loop Each ID to Prune
