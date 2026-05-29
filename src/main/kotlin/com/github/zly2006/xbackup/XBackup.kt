@@ -43,7 +43,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.1.0"
+    const val MOD_VERSION = "1.1.1"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -100,6 +100,14 @@ object XBackup : ModInitializer {
     fun saveConfig() {
         try {
             configPath.writeText(json.encodeToString(config))
+            _service?.let { service ->
+                val newBlobPath = if (config.mirrorMode) {
+                    Path(config.mirrorFrom ?: "").resolve(config.blobPath).absolute().normalize()
+                } else {
+                    Path("").absolute().resolve(config.blobPath).normalize()
+                }
+                service.blobDir = newBlobPath
+            }
         } catch (e: Exception) {
             log.error("Error saving config", e)
         }

@@ -32,7 +32,7 @@ import kotlin.io.path.*
 class BackupDatabaseService(
     val databaseDir: Path,
     val database: Database,
-    private val blobDir: Path,
+    var blobDir: Path,
     private val config: Config
 ) : CoroutineScope, XBackupKotlinAsyncApi {
     private val log = LoggerFactory.getLogger("XBackup")!!
@@ -754,6 +754,18 @@ class BackupDatabaseService(
         }
         log.info("Deleted ${unused.size} unused blobs")
         return unused.size
+    }
+
+    suspend fun clearDatabase() {
+        dbQuery {
+            SchemaUtils.drop(BackupEntryBackupTable, BackupTable, BackupEntryTable)
+            SchemaUtils.createMissingTablesAndColumns(
+                BackupEntryTable,
+                BackupTable,
+                BackupEntryBackupTable,
+                withLogs = false
+            )
+        }
     }
 
     override suspend fun <T> dbQuery(block: suspend Transaction.() -> T): T =

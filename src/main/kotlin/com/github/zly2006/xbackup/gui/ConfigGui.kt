@@ -100,6 +100,22 @@ object ConfigGui {
                         .binding("2d", { config.pruneConfig.keepTemporary }, { config.pruneConfig.keepTemporary = it })
                         .controller { opt -> StringControllerBuilder.create(opt) }
                         .build())
+                    .option(Option.createBuilder<String>()
+                        .name(Component.literal("GFS Keep Policy"))
+                        .description(OptionDescription.of(Component.literal(
+                            "Grandfather-Father-Son (GFS) prune keep policy.\n" +
+                            "Format: <window>:<interval>, <window>:<interval>, ...\n" +
+                            "Units: m (minutes), h (hours), d (days), w (weeks), M (months), y (years)\n" +
+                            "Example: 1d:30m, 1w:6h, 1M:1d, 1y:1w, 2y:1M\n" +
+                            "If formatting is invalid, the changes will not be saved."
+                        )))
+                        .binding(
+                            "1d:30m, 1w:6h, 1M:1d, 1y:1w, 2y:1M",
+                            { config.pruneConfig.getKeepPolicyString() },
+                            { config.pruneConfig.setKeepPolicyString(it) }
+                        )
+                        .controller { opt -> StringControllerBuilder.create(opt) }
+                        .build())
                     .build())
                 .build())
             .category(ConfigCategory.createBuilder()

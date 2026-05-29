@@ -372,29 +372,10 @@ object Commands {
                     literal("confirm") {
                         executes {
                             XBackup.ensureNotBusy {
-                                XBackup.service.close()
-                                val worldPath = it.source.server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize()
-                                val dbFile = worldPath.resolve("x_backup.db").toFile()
-                                val dbWal = worldPath.resolve("x_backup.db-wal").toFile()
-                                val dbShm = worldPath.resolve("x_backup.db-shm").toFile()
-                                dbFile.delete()
-                                dbWal.delete()
-                                dbShm.delete()
-                                val blobPath = if (XBackup.config.mirrorMode) {
-                                    Path(XBackup.config.mirrorFrom!!).resolve(XBackup.config.blobPath).absolute().normalize()
-                                } else {
-                                    Path("").absolute().resolve(XBackup.config.blobPath).normalize()
-                                }
+                                XBackup.service.clearDatabase()
+                                val blobPath = XBackup.service.blobDir
                                 blobPath.toFile().deleteRecursively()
                                 blobPath.toFile().mkdirs()
-                                val database = XBackup.getDatabaseFromWorld(worldPath)
-                                XBackup._service = BackupDatabaseService(
-                                    worldPath,
-                                    database,
-                                    blobPath,
-                                    XBackup.config
-                                )
-                                XBackupApi.setInstance(XBackup.service)
                                 it.source.send(Component.literal("All backup data has been completely deleted. A fresh database has been initialized.").withStyle(ChatFormatting.GREEN))
                             }
                             1

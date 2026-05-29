@@ -11,7 +11,7 @@ class Config {
         var enabled = false
 
         @SerialName("keep_policy")
-        val keepPolicy = mapOf(
+        var keepPolicy = mutableMapOf(
             "1d" to "30m",
             "1w" to "6h",
             "1M" to "1d",
@@ -21,6 +21,35 @@ class Config {
 
         @SerialName("keep_temporary")
         var keepTemporary = "2d"
+
+        fun getKeepPolicyString(): String {
+            return keepPolicy.map { "${it.key}:${it.value}" }.joinToString(", ")
+        }
+
+        fun setKeepPolicyString(str: String): Boolean {
+            val regex = Regex("^\\s*(\\d+[mhdwMy])\\s*:\\s*(\\d+[mhdwMy])\\s*(\\s*,\\s*(\\d+[mhdwMy])\\s*:\\s*(\\d+[mhdwMy])\\s*)*$")
+            if (!regex.matches(str)) {
+                return false
+            }
+            try {
+                val newPolicy = mutableMapOf<String, String>()
+                str.split(",").forEach { part ->
+                    val split = part.split(":")
+                    if (split.size != 2) return false
+                    val window = split[0].trim()
+                    val interval = split[1].trim()
+                    window.toMillis()
+                    interval.toMillis()
+                    newPolicy[window] = interval
+                }
+                if (newPolicy.isEmpty()) return false
+                keepPolicy.clear()
+                keepPolicy.putAll(newPolicy)
+                return true
+            } catch (e: Exception) {
+                return false
+            }
+        }
 
         fun temporaryKeepPolicy(): Long {
             return keepTemporary.toMillis()
