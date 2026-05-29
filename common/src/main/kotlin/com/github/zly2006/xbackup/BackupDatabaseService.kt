@@ -168,22 +168,14 @@ class BackupDatabaseService(
             try {
                 return when (compress) {
                     0 -> blob.inputStream()
-                    1 -> withContext(Dispatchers.IO) {
-                        net.jpountz.lz4.LZ4BlockInputStream(blob.inputStream())
-                    }
-                    2 -> ZipInputStream(blob.inputStream()).use {
-                        @Suppress("ControlFlowWithEmptyBody")
-                        while (it.nextEntry.let { zipEntry ->
-                                if (zipEntry == null) false
-                                else zipEntry.name != path
-                            }) {
-                        }
-                        it
-                    }
+                    1 -> error("Legacy GZIP compression is not supported by this version of X Backup.")
+                    2 -> error("Legacy ZIP compression is not supported by this version of X Backup.")
                     3 -> withContext(Dispatchers.IO) {
                         com.github.luben.zstd.ZstdInputStream(blob.inputStream())
                     }
-
+                    4 -> withContext(Dispatchers.IO) {
+                        net.jpountz.lz4.LZ4BlockInputStream(blob.inputStream())
+                    }
                     else -> error("Unknown compress type: $compress")
                 }
             } catch (e: ZipException) {
@@ -373,7 +365,7 @@ class BackupDatabaseService(
                                 it[this.hash] = md5
                                 it[this.zippedSize] = zippedSize
                                 it[this.compress] = if (shouldCompress) {
-                                    if (this@BackupDatabaseService.config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 1 else 3
+                                    if (this@BackupDatabaseService.config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 4 else 3
                                 } else 0
                             }.resultedValues!!.single().toBackupEntry()
                             newEntries.add(backupEntry)
@@ -739,7 +731,7 @@ class BackupDatabaseService(
                     isDirectory,
                     hash,
                     if (shouldCompress) {
-                        if (config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 1 else 3
+                        if (config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 4 else 3
                     } else 0
                 )
             )

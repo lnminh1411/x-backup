@@ -3,6 +3,9 @@
 - Added config to pause automatic backups when no players are active
 - Added config to discard empty backups (with 0 new files)
 - Added new YACL config screen fields
+- Added legacy database detection and automated backup migration to x_backup.db.legacy
+- Fixed LZ4 compression code database conflict (LZ4=4, Zstd=3, Gzip=1, Zip=2)
+- Added '/xb delete-all' command with warning confirmation
 
 ## 1.0.0
 - Removed Onedrive support

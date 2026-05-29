@@ -31,8 +31,10 @@ import net.minecraft.ChatFormatting
 
 import net.minecraft.world.level.storage.LevelResource
 import net.minecraft.server.permissions.Permission
+import java.io.File
 import java.net.URI
 import java.nio.file.Path
+import com.github.zly2006.xbackup.api.XBackupApi
 import java.text.SimpleDateFormat
 import java.util.*
 import java.util.zip.ZipOutputStream
@@ -359,6 +361,44 @@ object Commands {
                             it.source.send(Utils.translate("command.xb.backup_deleted", backupIdText(id)))
                         }
                         1
+                    }
+                }
+                literal("delete-all") {
+                    requires = checkPermission("x_backup.delete", 4)
+                    executes {
+                        it.source.send(Component.literal("WARNING: This will permanently delete the entire backup database and ALL deduplicated backup blobs! This action cannot be undone. Run '/xb delete-all confirm' to confirm.").withStyle(ChatFormatting.RED))
+                        1
+                    }
+                    literal("confirm") {
+                        executes {
+                            XBackup.ensureNotBusy {
+                                XBackup.service.close()
+                                val worldPath = it.source.server.getWorldPath(LevelResource.ROOT).toAbsolutePath().normalize()
+                                val dbFile = worldPath.resolve("x_backup.db").toFile()
+                                val dbWal = worldPath.resolve("x_backup.db-wal").toFile()
+                                val dbShm = worldPath.resolve("x_backup.db-shm").toFile()
+                                dbFile.delete()
+                                dbWal.delete()
+                                dbShm.delete()
+                                val blobPath = if (XBackup.config.mirrorMode) {
+                                    Path(XBackup.config.mirrorFrom!!).resolve(XBackup.config.blobPath).absolute().normalize()
+                                } else {
+                                    Path("").absolute().resolve(XBackup.config.blobPath).normalize()
+                                }
+                                blobPath.toFile().deleteRecursively()
+                                blobPath.toFile().mkdirs()
+                                val database = XBackup.getDatabaseFromWorld(worldPath)
+                                XBackup._service = BackupDatabaseService(
+                                    worldPath,
+                                    database,
+                                    blobPath,
+                                    XBackup.config
+                                )
+                                XBackupApi.setInstance(XBackup.service)
+                                it.source.send(Component.literal("All backup data has been completely deleted. A fresh database has been initialized.").withStyle(ChatFormatting.GREEN))
+                            }
+                            1
+                        }
                     }
                 }
                 literal("restore") {

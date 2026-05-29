@@ -160,6 +160,7 @@ object XBackup : ModInitializer {
             else {
                 server.getWorldPath(LevelResource.ROOT)
             }.toAbsolutePath().normalize()
+            checkAndMigrateLegacyDatabase(worldPath)
             val database = getDatabaseFromWorld(worldPath)
             if (config.mirrorMode) {
                 val sourceConfig = kotlin.runCatching {
@@ -369,6 +370,39 @@ object XBackup : ModInitializer {
             count++
         }
         return count
+    }
+
+    fun checkAndMigrateLegacyDatabase(worldPath: Path) {
+        val dbFile = worldPath.resolve("x_backup.db").toFile()
+        if (!dbFile.exists()) return
+
+        try {
+            java.sql.DriverManager.getConnection("jdbc:sqlite:${dbFile.absolutePath}").use { conn ->
+                val meta = conn.metaData
+                val tables = meta.getTables(null, null, "backup_entries", null)
+                if (tables.next()) {
+                    conn.createStatement().use { stmt ->
+                        stmt.executeQuery("SELECT COUNT(*) FROM backup_entries WHERE compress = 1 OR compress = 2").use { rs ->
+                            if (rs.next() && rs.getInt(1) > 0) {
+                                log.warn("[X Backup] Legacy backups using GZIP/ZIP detected in database. Renaming database to preserve compatibility for downgrade.")
+                                conn.close()
+                                val legacyFile = worldPath.resolve("x_backup.db.legacy").toFile()
+                                if (legacyFile.exists()) {
+                                    legacyFile.delete()
+                                }
+                                if (dbFile.renameTo(legacyFile)) {
+                                    log.info("[X Backup] Successfully renamed legacy database to x_backup.db.legacy")
+                                } else {
+                                    log.error("[X Backup] Failed to rename legacy database!")
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            log.error("[X Backup] Error checking legacy database", e)
+        }
     }
 
     fun ensureNotBusy(

@@ -119,6 +119,14 @@ class BackupsGui(private val service: BackupDatabaseService, val worldRoot: Path
 
     private fun restoreSelected(gui: ModularGui) {
         if (selected == null) return
+        if (selected!!.entries.any { it.compress == 1 || it.compress == 2 }) {
+            OptionDialog.simpleInfoDialog(
+                gui,
+                Component.literal("Incompatible legacy backup! This backup uses GZIP/ZIP compression, which is not supported in this version.")
+                    .withStyle(ChatFormatting.RED)
+            )
+            return
+        }
         if (!service.check(selected!!)) {
             OptionDialog.simpleInfoDialog(
                 gui,
