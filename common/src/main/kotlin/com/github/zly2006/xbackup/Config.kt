@@ -2,6 +2,11 @@ package com.github.zly2006.xbackup
 
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
+import java.time.Instant
+import java.time.ZoneId
+import java.time.ZonedDateTime
+import java.time.temporal.WeekFields
+import java.util.Locale
 
 @Serializable
 class Config {
@@ -10,68 +15,106 @@ class Config {
         @SerialName("enabled")
         var enabled = false
 
-        @SerialName("keep_policy")
-        var keepPolicy = mutableMapOf(
-            "1d" to "30m",
-            "1w" to "6h",
-            "1M" to "1d",
-            "1y" to "1w",
-            "2y" to "1M"
-        )
+        @SerialName("keep_last")
+        var keepLast = 5
+
+        @SerialName("keep_daily")
+        var keepDaily = 7
+
+        @SerialName("keep_weekly")
+        var keepWeekly = 4
+
+        @SerialName("keep_monthly")
+        var keepMonthly = 12
 
         @SerialName("keep_temporary")
         var keepTemporary = "2d"
-
-        fun getKeepPolicyString(): String {
-            return keepPolicy.map { "${it.key}:${it.value}" }.joinToString(", ")
-        }
-
-        fun setKeepPolicyString(str: String): Boolean {
-            val regex = Regex("^\\s*(\\d+[mhdwMy])\\s*:\\s*(\\d+[mhdwMy])\\s*(\\s*,\\s*(\\d+[mhdwMy])\\s*:\\s*(\\d+[mhdwMy])\\s*)*$")
-            if (!regex.matches(str)) {
-                return false
-            }
-            try {
-                val newPolicy = mutableMapOf<String, String>()
-                str.split(",").forEach { part ->
-                    val split = part.split(":")
-                    if (split.size != 2) return false
-                    val window = split[0].trim()
-                    val interval = split[1].trim()
-                    window.toMillis()
-                    interval.toMillis()
-                    newPolicy[window] = interval
-                }
-                if (newPolicy.isEmpty()) return false
-                keepPolicy.clear()
-                keepPolicy.putAll(newPolicy)
-                return true
-            } catch (e: Exception) {
-                return false
-            }
-        }
 
         fun temporaryKeepPolicy(): Long {
             return keepTemporary.toMillis()
         }
 
         fun prune(idToTime: Map<String, Long>, now: Long): List<String> {
-            var oldest = 0L
-            val ret = mutableListOf<String>()
-            val policies = keepPolicy.map { (k, v) -> k.toMillis() to v.toMillis() }.sortedBy { it.first }
-            idToTime.toList().sortedBy { (_, time) -> time }.forEach { (id, time) ->
-                val diff = time - oldest
-                val policy = policies.firstOrNull { it.first > now - time } ?: policies.lastOrNull()
-                if (policy != null) {
-                    if (diff < policy.second) {
-                        ret.add(id)
-                    } else {
-                        oldest = time
-                    }
+            if (idToTime.isEmpty()) return emptyList()
+
+            val zoneId = ZoneId.systemDefault()
+            val nowZDT = Instant.ofEpochMilli(now).atZone(zoneId)
+            val nowDate = nowZDT.toLocalDate()
+            val weekFields = WeekFields.of(Locale.getDefault())
+
+            // Sort all backups by timestamp descending (newest first)
+            val sortedBackups = idToTime.toList().map { (id, time) ->
+                val zdt = Instant.ofEpochMilli(time).atZone(zoneId)
+                BackupTimeInfo(id, time, zdt)
+            }.sortedByDescending { it.time }
+
+            val keptIds = mutableSetOf<String>()
+
+            // 1. Keep Last L (minimum 1)
+            val l = keepLast.coerceAtLeast(1)
+            sortedBackups.take(l).forEach { keptIds.add(it.id) }
+
+            // 2. Keep Daily D
+            if (keepDaily > 0) {
+                val validDays = (0 until keepDaily).map { offset ->
+                    nowDate.minusDays(offset.toLong())
+                }.toSet()
+
+                val dailyGroups = sortedBackups.filter { it.zdt.toLocalDate() in validDays }
+                    .groupBy { it.zdt.toLocalDate() }
+                
+                for ((_, group) in dailyGroups) {
+                    keptIds.add(group.maxByOrNull { it.time }!!.id)
                 }
             }
-            return ret
+
+            // 3. Keep Weekly W
+            if (keepWeekly > 0) {
+                val validWeeks = (0 until keepWeekly).map { offset ->
+                    val date = nowDate.minusWeeks(offset.toLong())
+                    val y = date.get(weekFields.weekBasedYear())
+                    val w = date.get(weekFields.weekOfWeekBasedYear())
+                    "$y-W$w"
+                }.toSet()
+
+                val weeklyGroups = sortedBackups.filter {
+                    val y = it.zdt.get(weekFields.weekBasedYear())
+                    val w = it.zdt.get(weekFields.weekOfWeekBasedYear())
+                    "$y-W$w" in validWeeks
+                }.groupBy {
+                    val y = it.zdt.get(weekFields.weekBasedYear())
+                    val w = it.zdt.get(weekFields.weekOfWeekBasedYear())
+                    "$y-W$w"
+                }
+
+                for ((_, group) in weeklyGroups) {
+                    keptIds.add(group.maxByOrNull { it.time }!!.id)
+                }
+            }
+
+            // 4. Keep Monthly M
+            if (keepMonthly > 0) {
+                val validMonths = (0 until keepMonthly).map { offset ->
+                    val date = nowDate.minusMonths(offset.toLong())
+                    "${date.year}-M${date.monthValue}"
+                }.toSet()
+
+                val monthlyGroups = sortedBackups.filter {
+                    "${it.zdt.year}-M${it.zdt.monthValue}" in validMonths
+                }.groupBy {
+                    "${it.zdt.year}-M${it.zdt.monthValue}"
+                }
+
+                for ((_, group) in monthlyGroups) {
+                    keptIds.add(group.maxByOrNull { it.time }!!.id)
+                }
+            }
+
+            val allIds = idToTime.keys
+            return allIds.filter { it !in keptIds }
         }
+
+        private data class BackupTimeInfo(val id: String, val time: Long, val zdt: ZonedDateTime)
 
         private fun String.toMillis(): Long {
             val regex = Regex("(\\d+)([mhdwMy])")

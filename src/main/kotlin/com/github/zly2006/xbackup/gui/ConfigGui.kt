@@ -96,25 +96,53 @@ object ConfigGui {
                         .build())
                     .option(Option.createBuilder<String>()
                         .name(Component.literal("Temporary Backup Expiry"))
-                        .description(OptionDescription.of(Component.literal("Time to retain temporary backups before they are pruned, e.g. 2d.")))
+                        .description(OptionDescription.of(Component.literal(
+                            "Time to retain temporary backups before they are pruned, e.g. 2d.\n" +
+                            "Temporary Backups are backups created automatically before a restoration to ensure recovery " +
+                            "if the restore fails or is reverted, and are pruned after this expiry duration."
+                        )))
                         .binding("2d", { config.pruneConfig.keepTemporary }, { config.pruneConfig.keepTemporary = it })
                         .controller { opt -> StringControllerBuilder.create(opt) }
                         .build())
-                    .option(Option.createBuilder<String>()
-                        .name(Component.literal("GFS Keep Policy"))
+                    .option(Option.createBuilder<Int>()
+                        .name(Component.literal("Keep Last Backups"))
                         .description(OptionDescription.of(Component.literal(
-                            "Grandfather-Father-Son (GFS) prune keep policy.\n" +
-                            "Format: <window>:<interval>, <window>:<interval>, ...\n" +
-                            "Units: m (minutes), h (hours), d (days), w (weeks), M (months), y (years)\n" +
-                            "Example: 1d:30m, 1w:6h, 1M:1d, 1y:1w, 2y:1M\n" +
-                            "If formatting is invalid, the changes will not be saved."
+                            "Number of most recent backups to keep, regardless of their age.\n" +
+                            "Example: 5 means the 5 newest backups will always be kept.\n" +
+                            "Note: The minimum keep policy is 1 last backup."
                         )))
-                        .binding(
-                            "1d:30m, 1w:6h, 1M:1d, 1y:1w, 2y:1M",
-                            { config.pruneConfig.getKeepPolicyString() },
-                            { config.pruneConfig.setKeepPolicyString(it) }
-                        )
-                        .controller { opt -> StringControllerBuilder.create(opt) }
+                        .binding(5, { config.pruneConfig.keepLast }, { config.pruneConfig.keepLast = it.coerceAtLeast(1) })
+                        .controller { opt -> IntegerFieldControllerBuilder.create(opt).min(1) }
+                        .build())
+                    .option(Option.createBuilder<Int>()
+                        .name(Component.literal("Keep Daily Days"))
+                        .description(OptionDescription.of(Component.literal(
+                            "Number of days to keep one daily backup. Represents the newest backup of each calendar day.\n" +
+                            "Example: 7 means one backup per day will be kept for the last 7 days.\n" +
+                            "Note: Set to 0 to keep 0 daily backups (disables daily retention)."
+                        )))
+                        .binding(7, { config.pruneConfig.keepDaily }, { config.pruneConfig.keepDaily = it.coerceAtLeast(0) })
+                        .controller { opt -> IntegerFieldControllerBuilder.create(opt).min(0) }
+                        .build())
+                    .option(Option.createBuilder<Int>()
+                        .name(Component.literal("Keep Weekly Weeks"))
+                        .description(OptionDescription.of(Component.literal(
+                            "Number of weeks to keep one weekly backup. Represents the newest backup of each calendar week.\n" +
+                            "Example: 4 means one backup per week will be kept for the last 4 weeks.\n" +
+                            "Note: Set to 0 to keep 0 weekly backups (disables weekly retention)."
+                        )))
+                        .binding(4, { config.pruneConfig.keepWeekly }, { config.pruneConfig.keepWeekly = it.coerceAtLeast(0) })
+                        .controller { opt -> IntegerFieldControllerBuilder.create(opt).min(0) }
+                        .build())
+                    .option(Option.createBuilder<Int>()
+                        .name(Component.literal("Keep Monthly Months"))
+                        .description(OptionDescription.of(Component.literal(
+                            "Number of months to keep one monthly backup. Represents the newest backup of each calendar month.\n" +
+                            "Example: 12 means one backup per month will be kept for the last 12 months.\n" +
+                            "Note: Set to 0 to keep 0 monthly backups (disables monthly retention)."
+                        )))
+                        .binding(12, { config.pruneConfig.keepMonthly }, { config.pruneConfig.keepMonthly = it.coerceAtLeast(0) })
+                        .controller { opt -> IntegerFieldControllerBuilder.create(opt).min(0) }
                         .build())
                     .build())
                 .build())

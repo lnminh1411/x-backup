@@ -1,3 +1,7 @@
+## 1.1.2
+- Replaced custom GFS Keep Policy string map with standard integer configuration fields (Keep Last, Keep Daily, Keep Weekly, Keep Monthly) in both the model and YACL GUI.
+- Added detailed explanation and context for temporary backups under the "Temporary Backup Expiry" option in the YACL configuration GUI.
+
 ## 1.1.1
 - Resolved Windows SQLite database locks during `/xb delete-all` by implementing in-DB drop and recreate schema.
 - Fixed Backup Storage Path config to update dynamically at runtime without requiring a server restart.
