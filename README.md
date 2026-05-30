@@ -91,6 +91,37 @@ If you want to stop the server and restore the backup, you can use the `--stop` 
 ```
 /mirror --stop
 ```
+### Remote Backup & Sync Configuration
+
+X Backup supports automatically copying or pushing completed backups to a remote target. It supports two remote types:
+- **Git Remote**: Automatically pushes backup database and blobs to any git repository (e.g. GitHub, GitLab, self-hosted).
+- **File Remote**: Copies backup database and blobs to any directory or local network drive share (UNC path).
+
+You can configure the remote target using the `/xb remote-url-set <remote url>` command. For example:
+- Set a Git remote:
+  ```
+  /xb remote-url-set git@github.com:username/my-mc-backups.git
+  ```
+- Set a File remote (network share):
+  ```
+  /xb remote-url-set \\192.168.1.100\Backups\Minecraft
+  ```
+
+#### Remote Configurations (YACL GUI & Config File)
+Under the **Remote Backup** YACL category or in the `x-backup.config.json` file, you can customize:
+- **Enable Remote Sync**: Toggle whether remote synchronization is active.
+- **Sync on Backup**: Automatically upload/sync backups to the remote whenever a backup is successfully created.
+- **Git Branch Name**: The branch name to push to when using a Git remote (defaults to `main`).
+- **Force Overwrite Remote**: Enable to force-push (`git push --force`) to remote. If disabled, pushing conflicts will abort the upload and preserve the remote's existing history.
+
+#### Mounted Network Drive Failsafe
+To protect against disconnected network drives or unmapped paths, X Backup performs an automated write-read-delete failsafe test before executing backup operations. If the destination storage path is offline or not writable, the backup is safely aborted to prevent data corruption.
+
+### Progress Logs (Real-time Broadcast)
+
+For long-running backups or remote uploads (taking longer than 10 seconds), X Backup automatically runs an asynchronous progress logging loop. It broadcasts progress updates to the server chat (based on your chat notification settings) and logs them to the console at a configurable interval:
+- Progress output includes: **Percentage Completed**, **Processed File Size**, and **Time Elapsed**.
+- Customize the logging frequency using the **Progress Logging Interval** setting (minimum 1 second).
 
 ### Cleaning Up Unnecessary Backups
 
