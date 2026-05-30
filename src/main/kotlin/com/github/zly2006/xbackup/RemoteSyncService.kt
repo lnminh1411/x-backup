@@ -88,6 +88,14 @@ object RemoteSyncService {
         
         try {
             val remoteType = detectRemoteType(remoteUrl)
+            activeSyncTask = "Verifying Remote Connection"
+            if (!verifyRemote(remoteUrl, service, config)) {
+                val errorMsg = "Remote Sync failed: Invalid or unreachable remote server URL '$remoteUrl'."
+                log.error(errorMsg)
+                server?.broadcast(Component.literal(errorMsg))
+                return@withContext
+            }
+            
             log.info("Starting remote sync to $remoteUrl (Type: $remoteType)")
             
             if (remoteType == RemoteType.FILE) {
@@ -108,15 +116,26 @@ object RemoteSyncService {
                 processedFiles.set(0)
                 processedBytes.set(0)
                 
-                filesToCopy.forEach { file ->
-                    val relativePath = localBlobDir.relativize(file.toPath())
-                    val targetFile = remoteBlobDir.resolve(relativePath)
-                    if (!targetFile.exists() || targetFile.fileSize() != file.length()) {
-                        targetFile.createParentDirectories()
-                        Files.copy(file.toPath(), targetFile, StandardCopyOption.REPLACE_EXISTING)
-                    }
-                    processedBytes.addAndGet(file.length())
-                    processedFiles.incrementAndGet()
+                val limit = 8
+                val copyDispatcher = Dispatchers.IO.limitedParallelism(limit)
+                coroutineScope {
+                    filesToCopy.map { file ->
+                        async(copyDispatcher) {
+                            val relativePath = localBlobDir.relativize(file.toPath())
+                            val targetFile = remoteBlobDir.resolve(relativePath)
+                            if (!targetFile.exists() || targetFile.fileSize() != file.length()) {
+                                targetFile.createParentDirectories()
+                                try {
+                                    Files.copy(file.toPath(), targetFile, StandardCopyOption.REPLACE_EXISTING)
+                                } catch (e: Exception) {
+                                    delay(500)
+                                    Files.copy(file.toPath(), targetFile, StandardCopyOption.REPLACE_EXISTING)
+                                }
+                            }
+                            processedBytes.addAndGet(file.length())
+                            processedFiles.incrementAndGet()
+                        }
+                    }.awaitAll()
                 }
                 
                 // Copy database
@@ -171,15 +190,26 @@ object RemoteSyncService {
                 processedFiles.set(0)
                 processedBytes.set(0)
                 
-                filesToCopy.forEach { file ->
-                    val relativePath = localBlobDir.relativize(file.toPath())
-                    val targetFile = stagingBlobDir.resolve(relativePath)
-                    if (!targetFile.exists() || targetFile.fileSize() != file.length()) {
-                        targetFile.createParentDirectories()
-                        Files.copy(file.toPath(), targetFile, StandardCopyOption.REPLACE_EXISTING)
-                    }
-                    processedBytes.addAndGet(file.length())
-                    processedFiles.incrementAndGet()
+                val limit = 8
+                val copyDispatcher = Dispatchers.IO.limitedParallelism(limit)
+                coroutineScope {
+                    filesToCopy.map { file ->
+                        async(copyDispatcher) {
+                            val relativePath = localBlobDir.relativize(file.toPath())
+                            val targetFile = stagingBlobDir.resolve(relativePath)
+                            if (!targetFile.exists() || targetFile.fileSize() != file.length()) {
+                                targetFile.createParentDirectories()
+                                try {
+                                    Files.copy(file.toPath(), targetFile, StandardCopyOption.REPLACE_EXISTING)
+                                } catch (e: Exception) {
+                                    delay(500)
+                                    Files.copy(file.toPath(), targetFile, StandardCopyOption.REPLACE_EXISTING)
+                                }
+                            }
+                            processedBytes.addAndGet(file.length())
+                            processedFiles.incrementAndGet()
+                        }
+                    }.awaitAll()
                 }
                 
                 // Copy database
@@ -225,13 +255,56 @@ object RemoteSyncService {
         }
     }
 
+    private fun verifyRemote(remoteUrl: String, service: BackupDatabaseService, config: Config): Boolean {
+        val type = detectRemoteType(remoteUrl)
+        if (type == RemoteType.FILE) {
+            val path = try {
+                Path(remoteUrl).normalize()
+            } catch (e: Exception) {
+                return false
+            }
+            if (!path.isAbsolute) {
+                return false
+            }
+            return service.verifyDirectoryWritable(path)
+        } else {
+            if (!isGitInstalled()) {
+                return false
+            }
+            val pb = ProcessBuilder("git", "ls-remote", remoteUrl)
+                .directory(Path("").toAbsolutePath().toFile())
+                .redirectErrorStream(true)
+            pb.environment()["GIT_TERMINAL_PROMPT"] = "0"
+            pb.environment()["GIT_ASKPASS"] = "true"
+            pb.environment()["SSH_ASKPASS"] = "true"
+            
+            return try {
+                val process = pb.start()
+                val output = process.inputStream.bufferedReader().use { it.readText() }
+                val exitCode = process.waitFor()
+                if (exitCode != 0) {
+                    log.error("Git verification failed for $remoteUrl. Exit code: $exitCode, Output: $output")
+                }
+                exitCode == 0
+            } catch (e: Exception) {
+                log.error("Git verification threw exception for $remoteUrl", e)
+                false
+            }
+        }
+    }
+
+    private var gitInstalledCache: Boolean? = null
+
     private fun isGitInstalled(): Boolean {
-        return try {
+        gitInstalledCache?.let { return it }
+        val installed = try {
             val process = ProcessBuilder("git", "--version").start()
             process.waitFor() == 0
         } catch (e: Exception) {
             false
         }
+        gitInstalledCache = installed
+        return installed
     }
 
     private fun runGitCommand(dir: Path, args: List<String>): ProcessResult {

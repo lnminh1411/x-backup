@@ -32,21 +32,11 @@ suspend inline fun <T> retry(times: Int, function: () -> T): T {
 }
 
 fun InputStream.digest(algorithm: String): String = use { input ->
-    if (algorithm.equals("BLAKE3", ignoreCase = true)) {
-        val digest = org.apache.commons.codec.digest.Blake3.initHash()
-        val buffer = ByteArray(8192)
-        var read: Int
-        while (input.read(buffer).also { read = it } > 0) {
-            digest.update(buffer, 0, read)
-        }
-        digest.doFinalize(32)
-    } else {
-        val digest = MessageDigest.getInstance(algorithm)
-        val buffer = ByteArray(8192)
-        var read: Int
-        while (input.read(buffer).also { read = it } > 0) {
-            digest.update(buffer, 0, read)
-        }
-        digest.digest()
+    val digest = MessageDigest.getInstance(algorithm)
+    val buffer = ByteArray(8192)
+    var read: Int
+    while (input.read(buffer).also { read = it } > 0) {
+        digest.update(buffer, 0, read)
     }
+    digest.digest()
 }.joinToString("") { "%02x".format(it) }

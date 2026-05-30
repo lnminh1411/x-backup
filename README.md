@@ -60,6 +60,14 @@ You can set the automatic backup interval using the `/xb backup-interval <second
 
 This command sets the automatic backup interval to 10,800 seconds (i.e., 3 hours).
 
+#### Scheduler Mode (Realtime vs Gametime)
+You can configure the scheduler mode inside the YACL config GUI or via the `"scheduler_mode"` property in the config file:
+- **Realtime**: Schedules backups based on real-world clock time elapsed.
+- **Gametime**: Schedules backups based on active Minecraft world ticks. Note:
+  - 20 Minecraft ticks equal 1 second in game time under normal conditions.
+  - Server TPS (Ticks Per Second) directly affects the progress of Gametime scheduling.
+  - Absolute world game time is persisted inside the backup's metadata, ensuring the scheduler correctly tracks elapsed game time across server restarts and world reloads.
+
 ### Mirror Server Configuration
 
 If you are using a mirror server, you can use the `/mirror` command to synchronize the latest backup from the main server. For example:
@@ -117,11 +125,48 @@ Under the **Remote Backup** YACL category or in the `x-backup.config.json` file,
 #### Mounted Network Drive Failsafe
 To protect against disconnected network drives or unmapped paths, X Backup performs an automated write-read-delete failsafe test before executing backup operations. If the destination storage path is offline or not writable, the backup is safely aborted to prevent data corruption.
 
-### Progress Logs (Real-time Broadcast)
+### Progress Logs & Message Templates
 
-For long-running backups or remote uploads (taking longer than 10 seconds), X Backup automatically runs an asynchronous progress logging loop. It broadcasts progress updates to the server chat (based on your chat notification settings) and logs them to the console at a configurable interval:
-- Progress output includes: **Percentage Completed**, **Processed File Size**, and **Time Elapsed**.
-- Customize the logging frequency using the **Progress Logging Interval** setting (minimum 1 second).
+For long-running backups or remote uploads (taking longer than 10 seconds), X Backup automatically runs an asynchronous progress logging loop. It broadcasts progress updates to the server chat (based on your chat notification settings) and logs them to the console.
+
+#### Customizable Message Templates
+Under the **Message Templates** category in the YACL config screen or inside the `"messages"` object in `x-backup.config.json`, you can customize the start, finish, and progress logging statements for both scheduled and manual backups.
+
+The templates support the following placeholders:
+- **General**:
+  - `%PL%` — Name of the player who triggered the backup (defaults to "System").
+  - `%PL_BY%` — Conveniently formatted as `" by <player>"` (empty for system backups).
+  - `%ID%` — ID of the backup.
+  - `%TN%` — Name of the current active task (e.g. "Backup" or "Scheduled Backup").
+- **Files & Data Sizes**:
+  - `%DW%` / `%DP%` — Total size of the world / backup before compression (e.g., `12.50MB`).
+  - `%DB%` — Size of the backup after compression.
+  - `%FC_SZ%` — Size of newly backed up/changed files.
+  - `%FT%` — Total count of files in the backup.
+  - `%FC%` — Count of changed files.
+  - `%FR%` — Count of reused files.
+- **Progress Tracking**:
+  - `%BG%` — Current progress percentage (0–100).
+  - `%FB%` — Files progress string (e.g., `15 / 50`).
+  - `%BD%` — Byte size progress string (e.g., `1.50MB / 10.00MB`).
+  - `%TL%` — Elapsed time since task start (in seconds).
+  - `%TK%` — Time taken to complete the backup (seconds).
+  - `%tk%` — Time taken to complete the backup (milliseconds).
+- **System Metrics**:
+  - `%R%` — JVM RAM usage of the Minecraft server at the time of the log.
+  - `%D%` — Total disk capacity of the storage drive.
+  - `%DM%` — Disk space currently used on the system drive.
+- **Date & Time Formatting**:
+  - `%Y%` / `%y%` — Year with / without century.
+  - `%m%` / `%-m%` — Month (zero-padded / decimal).
+  - `%d%` / `%e%` — Day of month (zero-padded / space-padded).
+  - `%H%` / `%I%` — Hour (00–23 / 01–12).
+  - `%M%` — Minute (00–59).
+  - `%S%` — Second (00–59).
+  - `%p%` — AM/PM indicator.
+  - `%z%` / `%Z%` — UTC offset / timezone name.
+  - `%a%` / `%A%` — Weekday short / long name.
+  - `%b%` / `%B%` — Month short / long name.
 
 ### Cleaning Up Unnecessary Backups
 

@@ -309,9 +309,13 @@ object Commands {
                                 I18n["command.xb.manual_backup"]
                             }
                             XBackup.ensureNotBusy {
-                                it.source.server.broadcast(
-                                    Utils.translate("command.xb.creating_backup", it.source.textName)
+                                val startMsg = Utils.formatMessage(
+                                    XBackup.config.messageConfig.manualBackupStart,
+                                    server = it.source.server,
+                                    player = it.source.textName,
+                                    taskName = "Backup"
                                 )
+                                it.source.server.broadcast(Component.literal(startMsg))
                                 it.source.server.save()
                                 it.source.server.setAutoSaving(false)
                                 XBackup.disableSaving = true
@@ -325,19 +329,28 @@ object Commands {
                                             buildJsonObject {
                                                 put("mod_ver", XBackup.MOD_VERSION)
                                                 put("source", it.source.textName)
+                                                put("game_time", it.source.server.overworld().gameTime)
                                             }
                                         )
                                     } finally {
                                         progressJob.cancel()
                                     }
                                     if (result.success) {
-                                        it.source.server.broadcast(
-                                            Utils.translate(
-                                                "command.xb.backup_finished",
-                                                backupIdText(result.backId), it.source.textName, sizeText(result.totalSize),
-                                                sizeText(result.compressedSize), sizeText(result.addedSize), result.millis
-                                            )
+                                        val finishedMsg = Utils.formatMessage(
+                                            XBackup.config.messageConfig.manualBackupFinished,
+                                            server = it.source.server,
+                                            player = it.source.textName,
+                                            taskName = "Backup",
+                                            backupId = result.backId,
+                                            totalSize = result.totalSize,
+                                            compressedSize = result.compressedSize,
+                                            addedSize = result.addedSize,
+                                            timeTakenMillis = result.millis,
+                                            filesTotal = result.totalFilesCount,
+                                            filesChanged = result.filesChangedCount,
+                                            filesReused = result.filesReusedCount
                                         )
+                                        it.source.server.broadcast(Component.literal(finishedMsg))
                                         XBackup.playersLoggedOnSinceLastBackup = false
                                         if (XBackup.config.remoteConfig.enabled && XBackup.config.remoteConfig.syncOnBackup) {
                                             RemoteSyncService.syncToRemote(
@@ -678,7 +691,15 @@ object Commands {
             XBackup.disableSaving = true
             try {
                 runBlocking {
-                    service.createBackup(path.normalize(), "Auto-backup before restoring to #${backup.id}", true)
+                    service.createBackup(
+                        path.normalize(),
+                        "Auto-backup before restoring to #${backup.id}",
+                        temporary = true,
+                        metadata = buildJsonObject {
+                            put("mod_ver", XBackup.MOD_VERSION)
+                            put("game_time", it.source.server.overworld().gameTime)
+                        }
+                    )
                 }
             } finally {
                 it.source.server.setAutoSaving(true)

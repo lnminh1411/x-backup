@@ -163,6 +163,33 @@ class Config {
         @SerialName("lz4") LZ4
     }
 
+    @Serializable
+    enum class SchedulerMode {
+        @SerialName("gametime") GAME_TIME,
+        @SerialName("realtime") REAL_TIME
+    }
+
+    @Serializable
+    class MessageConfig {
+        @SerialName("scheduled_backup_start")
+        var scheduledBackupStart = "Running scheduled backup, please wait..."
+
+        @SerialName("manual_backup_start")
+        var manualBackupStart = "%PL% is creating a backup, this may take a while..."
+
+        @SerialName("scheduled_backup_finished")
+        var scheduledBackupFinished = "Scheduled backup #%ID% finished, %DP% (%DB% after compression) +%FC_SZ% in %TK%s"
+
+        @SerialName("manual_backup_finished")
+        var manualBackupFinished = "Backup #%ID% by %PL% finished, %DP% (%DB% after compression) +%FC_SZ% in %TK%s"
+
+        @SerialName("backup_progress")
+        var backupProgress = "%TN% Progress: %BG%% (%BD%, Files: %FB%) // Time elapsed: %TL%s"
+
+        @SerialName("other_progress")
+        var otherProgress = "%TN% Progress: %BG%% (%BD%) // Time elapsed: %TL%s"
+    }
+
     @SerialName("ignored_files")
     val ignoredFiles: List<String> = listOf(
         "session.lock",
@@ -222,5 +249,11 @@ class Config {
 
     @SerialName("only_broadcast_to_op")
     var onlyBroadcastToOp = true
+
+    @SerialName("scheduler_mode")
+    var schedulerMode: SchedulerMode = SchedulerMode.REAL_TIME
+
+    @SerialName("messages")
+    val messageConfig = MessageConfig()
 }
 

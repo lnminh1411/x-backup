@@ -43,7 +43,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.2.3"
+    const val MOD_VERSION = "1.3.0"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -262,7 +262,18 @@ object XBackup : ModInitializer {
                     if (now - lastBackupAttemptTime < 300_000) {
                         continue
                     }
-                    if (backup == null || (now - backup.created) / 1000 > config.backupInterval) {
+                    val isDue = if (config.schedulerMode == Config.SchedulerMode.GAME_TIME) {
+                        val lastGameTime = backup?.metadata?.get("game_time")?.jsonPrimitive?.longOrNull
+                        if (lastGameTime != null) {
+                            val elapsedTicks = server.overworld().gameTime - lastGameTime
+                            elapsedTicks / 20 > config.backupInterval
+                        } else {
+                            backup == null || (now - backup.created) / 1000 > config.backupInterval
+                        }
+                    } else {
+                        backup == null || (now - backup.created) / 1000 > config.backupInterval
+                    }
+                    if (isDue) {
                         if (config.pauseAutomaticBackupsWithoutPlayers) {
                             val playersOnline = server.playerList.playerCount > 0
                             if (playersOnline) {
@@ -281,7 +292,12 @@ object XBackup : ModInitializer {
                             isBusy = true
                             lastBackupAttemptTime = System.currentTimeMillis()
                             withContext(server.asCoroutineDispatcher()) {
-                                server.broadcast(Utils.translate("message.xb.running_scheduled_backup"))
+                                val startMsg = Utils.formatMessage(
+                                    config.messageConfig.scheduledBackupStart,
+                                    server = server,
+                                    taskName = "Scheduled Backup"
+                                )
+                                server.broadcast(Component.literal(startMsg))
                                 server.save()
                                 server.setAutoSaving(false)
                                 disableSaving = true
@@ -295,6 +311,7 @@ object XBackup : ModInitializer {
                                         put("scheduled", true)
                                         put("interval", config.backupInterval)
                                         put("mod_ver", MOD_VERSION)
+                                        put("game_time", server.overworld().gameTime)
                                     }
                                 )
                             } finally {
@@ -322,16 +339,21 @@ object XBackup : ModInitializer {
                                 backups.sortedByDescending { it.getLastModifiedTime().toMillis() }
                                     .drop(5)
                                     .forEach { it.toFile().deleteRecursively() }
-                                server.broadcast(
-                                    Utils.translate(
-                                        "message.xb.scheduled_backup_finished",
-                                        backupIdText(result.backId),
-                                        sizeText(result.totalSize),
-                                        sizeText(result.compressedSize),
-                                        sizeText(result.addedSize),
-                                        result.millis
-                                    )
+                                val finishedMsg = Utils.formatMessage(
+                                    config.messageConfig.scheduledBackupFinished,
+                                    server = server,
+                                    player = "System",
+                                    taskName = "Scheduled Backup",
+                                    backupId = result.backId,
+                                    totalSize = result.totalSize,
+                                    compressedSize = result.compressedSize,
+                                    addedSize = result.addedSize,
+                                    timeTakenMillis = result.millis,
+                                    filesTotal = result.totalFilesCount,
+                                    filesChanged = result.filesChangedCount,
+                                    filesReused = result.filesReusedCount
                                 )
+                                server.broadcast(Component.literal(finishedMsg))
                                 playersLoggedOnSinceLastBackup = false
                                 if (config.remoteConfig.enabled && config.remoteConfig.syncOnBackup) {
                                     RemoteSyncService.syncToRemote(
@@ -528,29 +550,43 @@ object XBackup : ModInitializer {
             val startTime = System.currentTimeMillis()
             delay(10000)
             while (isActive && isBusy) {
-                val elapsed = (System.currentTimeMillis() - startTime) / 1000
+                val totalElapsed = (System.currentTimeMillis() - startTime) / 1000
                 val totalBytes = service.totalBytesToProcess.get()
                 val processed = service.processedBytes.get()
                 val totalFiles = service.totalFilesToProcess.get()
                 val doneFiles = service.processedFiles.get()
 
-                val percent = if (totalFiles > 0) (doneFiles * 100 / totalFiles) else 0
-                val processedStr = sizeToString(processed)
-                val totalStr = sizeToString(totalBytes)
+                val percent = if (totalBytes > 0) (processed * 100 / totalBytes) else 0
+                val processedStr = Utils.sizeToString(processed)
+                val totalStr = Utils.sizeToString(totalBytes)
 
-                server?.broadcast(
-                    Component.literal("$taskName Progress: $percent% ($processedStr / $totalStr) // Time elapsed: ${elapsed}s")
-                )
+                val msg = if (service.backupPhase == BackupDatabaseService.BackupPhase.BACKUP) {
+                    Utils.formatMessage(
+                        config.messageConfig.backupProgress,
+                        server = server,
+                        taskName = taskName,
+                        progressPercent = percent.toInt(),
+                        progressBytesStr = "$processedStr / $totalStr",
+                        progressFilesStr = "$doneFiles / $totalFiles",
+                        timeElapsedSeconds = totalElapsed,
+                        totalSize = totalBytes
+                    )
+                } else {
+                    val percentFiles = if (totalFiles > 0) (doneFiles * 100 / totalFiles) else 0
+                    Utils.formatMessage(
+                        config.messageConfig.otherProgress,
+                        server = server,
+                        taskName = taskName,
+                        progressPercent = percentFiles,
+                        progressBytesStr = "$processedStr / $totalStr",
+                        timeElapsedSeconds = totalElapsed
+                    )
+                }
+
+                server?.broadcast(Component.literal(msg))
 
                 delay(config.progressLogInterval.coerceAtLeast(1) * 1000L)
             }
         }
-    }
-
-    private fun sizeToString(bytes: Long): String {
-        if (bytes < 1024) return "${bytes}B"
-        val exp = (Math.log(bytes.toDouble()) / Math.log(1024.0)).toInt()
-        val pre = "KMGTPE"[exp - 1] + ""
-        return String.format("%.2f%sB", bytes / Math.pow(1024.0, exp.toDouble()), pre)
     }
 }

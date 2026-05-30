@@ -9,6 +9,7 @@ import kotlinx.serialization.json.*
 import org.jetbrains.exposed.dao.id.IntIdTable
 import org.jetbrains.exposed.sql.*
 import org.jetbrains.exposed.sql.SqlExpressionBuilder.eq
+import org.jetbrains.exposed.sql.SqlExpressionBuilder.inList
 import org.jetbrains.exposed.sql.json.json
 import org.jetbrains.exposed.sql.transactions.TransactionManager
 import org.jetbrains.exposed.sql.transactions.experimental.newSuspendedTransaction
@@ -50,6 +51,24 @@ class BackupDatabaseService(
     val processedBytes = java.util.concurrent.atomic.AtomicLong(0)
     val totalFilesToProcess = java.util.concurrent.atomic.AtomicInteger(0)
     val processedFiles = java.util.concurrent.atomic.AtomicInteger(0)
+
+    enum class BackupPhase {
+        NONE, BACKUP
+    }
+
+    private data class FileToCommit(
+        val sourceFile: File,
+        val path: Path,
+        val hash: String,
+        val tempBlob: Path,
+        val size: Long,
+        val lastModified: Long,
+        val zippedSize: Long,
+        val compress: Byte
+    )
+
+    @Volatile
+    var backupPhase = BackupPhase.NONE
 
     init {
         require(blobDir.isAbsolute && blobDir == blobDir.normalize()) {
@@ -223,7 +242,10 @@ class BackupDatabaseService(
         val totalSize: Long,
         val compressedSize: Long,
         val addedSize: Long,
-        val millis: Long
+        val millis: Long,
+        val totalFilesCount: Int = 0,
+        val filesChangedCount: Int = 0,
+        val filesReusedCount: Int = 0
     )
 
     suspend fun status(): XBackupStatus {
@@ -270,162 +292,332 @@ class BackupDatabaseService(
         if (blobDir.startsWith(root.absolute().normalize())) {
             error("Blob directory cannot be inside the backup directory")
         }
+        
+        // Pre-create all 256 subdirectories (00 to ff) and the .tmp folder under blobDir to avoid parallel NTFS metadata lock contention
+        blobDir.resolve(".tmp").createDirectories()
+        for (i in 0..255) {
+            val hex = "%02x".format(i)
+            blobDir.resolve(hex).createDirectories()
+        }
         val files = ConcurrentHashMap.newKeySet<String>()
         val timeStart = System.currentTimeMillis()
 
-        val newEntries = ConcurrentHashMap.newKeySet<BackupEntry>()
         val limit = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
         val backupDispatcher = Dispatchers.IO.limitedParallelism(limit)
         val allFiles = root.normalize().toFile().walk().filter {
             !shouldIgnore(it) && predicate(it.toPath())
         }.toList()
 
-        totalFilesToProcess.set(allFiles.size)
-        totalBytesToProcess.set(allFiles.sumOf { it.length() })
-        processedFiles.set(0)
-        processedBytes.set(0)
+        // Cache all database entries to do in-memory lookups
+        val allDbEntries = dbQuery {
+            BackupEntryTable.selectAll().map { it.toBackupEntry() }
+        }
+        val dbEntriesByPath = allDbEntries.groupBy { it.path }
+        val dbEntriesByHash = allDbEntries.associateBy { it.hash }
 
-        val entries = allFiles.map { sourceFile ->
+        data class EntryToInsert(
+            val path: String,
+            val size: Long,
+            val lastModified: Long,
+            val isDirectory: Boolean,
+            val hash: String,
+            val zippedSize: Long,
+            val compress: Byte
+        )
+        val entriesToInsert = java.util.concurrent.ConcurrentLinkedQueue<EntryToInsert>()
+
+        // Phase 1: Hashing & Direct Compression
+        backupPhase = BackupPhase.BACKUP
+        totalBytesToProcess.set(allFiles.sumOf { if (it.isFile) it.length() else 0L })
+        processedBytes.set(0L)
+        totalFilesToProcess.set(allFiles.size)
+        processedFiles.set(0)
+
+        val hashedEntries = ConcurrentHashMap<String, BackupEntry>()
+        val needsCommit = ConcurrentHashMap.newKeySet<FileToCommit>()
+
+        allFiles.map { sourceFile ->
             @Suppress("SuspendFunctionOnCoroutineScope")
             this.async(backupDispatcher) {
-                val entry = retry(5) {
-                    try {
-                        val path = root.normalize().relativize(sourceFile.toPath()).normalize()
-                        files.add(path.toString())
-                        val existing = dbQuery {
-                            BackupEntryTable.selectAll().where {
-                                var exp = BackupEntryTable.path eq path.toString() and
-                                        (BackupEntryTable.isDirectory eq sourceFile.isDirectory)
-                                if (sourceFile.isFile) {
-                                    exp = if (sourceFile.lastModified() % 1000 == 0L) {
-                                        // disable lastModified and size check since it's not accurate
-                                        Op.FALSE and exp
-                                    }
-                                    else {
-                                        // check lastModified and size
-                                        exp and (BackupEntryTable.size eq sourceFile.length()) and
-                                                (BackupEntryTable.lastModified eq sourceFile.lastModified())
-                                    }
-                                }
-                                exp
-                            }.map { it.toBackupEntry() }.firstOrNull {
-                                it.valid(this@BackupDatabaseService)
-                            }
-                        }
-                        if (existing != null) {
-                            if (sourceFile.isDirectory) {
-                                return@retry existing
-                            }
-                            else if (sourceFile.isFile) {
-                                if (getBlobFile(existing.hash).exists()) {
-                                    return@retry existing
-                                }
-                            }
-                        }
-                        val shouldCompress = sourceFile.isFile && sourceFile.length() > 1024
-                        var blake3 = ""
-                        var zippedSize: Long
+                retry(5) {
+                    val path = root.normalize().relativize(sourceFile.toPath()).normalize()
+                    files.add(path.toString())
+                    
+                    // In-memory look up for existing backup entries
+                    val existing = dbEntriesByPath[path.toString()]?.firstOrNull { entry ->
+                        if (entry.isDirectory != sourceFile.isDirectory) return@firstOrNull false
                         if (sourceFile.isFile) {
-                            val beforeSize = sourceFile.length()
-                            val beforeModified = sourceFile.lastModified()
-                            val tempBlob = blobDir.resolve(".tmp").resolve(UUID.randomUUID().toString())
-                            try {
-                                tempBlob.createParentDirectories()
-                                val digest = org.apache.commons.codec.digest.Blake3.initHash()
-                                val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
-                                if (shouldCompress) {
-                                    this@BackupDatabaseService.wrapOutputStream(tempBlob.outputStream().buffered()).use { output ->
-                                        sourceFile.inputStream().buffered().use { input ->
-                                            var read: Int
-                                            while (input.read(buffer).also { read = it } > 0) {
-                                                digest.update(buffer, 0, read)
-                                                output.write(buffer, 0, read)
-                                            }
-                                        }
-                                    }
-                                } else {
-                                    tempBlob.outputStream().buffered().use { output ->
-                                        sourceFile.inputStream().buffered().use { input ->
-                                            var read: Int
-                                            while (input.read(buffer).also { read = it } > 0) {
-                                                digest.update(buffer, 0, read)
-                                                output.write(buffer, 0, read)
-                                            }
-                                        }
-                                    }
-                                }
-                                blake3 = digest.doFinalize(32).joinToString("") { "%02x".format(it) }
-                                zippedSize = tempBlob.fileSize()
-
-                                val afterSize = sourceFile.length()
-                                val afterModified = sourceFile.lastModified()
-                                if (beforeSize != afterSize || beforeModified != afterModified) {
-                                    tempBlob.deleteIfExists()
-                                    error("File changed while creating backup, file: $path")
-                                }
-
-                                dbQuery {
-                                    BackupEntryTable.selectAll().where {
-                                        BackupEntryTable.path eq path.toString() and
-                                                (BackupEntryTable.isDirectory eq sourceFile.isDirectory) and
-                                                (BackupEntryTable.hash eq blake3)
-                                    }.map { it.toBackupEntry() }.firstOrNull {
-                                        it.valid(this@BackupDatabaseService)
-                                    }
-                                }?.let {
-                                    tempBlob.deleteIfExists()
-                                    return@retry it
-                                }
-
-                                val blob = getBlobFile(blake3)
-                                if (blob.exists() && blob.fileSize() == zippedSize) {
-                                    tempBlob.deleteIfExists()
-                                } else {
-                                    blob.createParentDirectories()
-                                    try {
-                                        tempBlob.moveTo(blob, StandardCopyOption.REPLACE_EXISTING)
-                                    } catch (e: IOException) {
-                                        if (blob.exists() && blob.fileSize() == zippedSize) {
-                                            tempBlob.deleteIfExists()
-                                        } else {
-                                            throw e
-                                        }
-                                    }
-                                }
-                            } catch (e: Throwable) {
-                                tempBlob.deleteIfExists()
-                                throw e
+                            if (sourceFile.lastModified() % 1000 == 0L) {
+                                false
+                            }
+                            else {
+                                entry.size == sourceFile.length() && entry.lastModified == sourceFile.lastModified()
                             }
                         } else {
-                            zippedSize = 0
+                            true
                         }
-                        syncDbQuery {
-                            val backupEntry = BackupEntryTable.insert {
-                                it[this.path] = path.toString()
-                                it[this.size] = sourceFile.length()
-                                it[this.lastModified] = sourceFile.lastModified()
-                                it[this.isDirectory] = sourceFile.isDirectory
-                                it[this.hash] = blake3
-                                it[this.zippedSize] = zippedSize
-                                it[this.compress] = if (shouldCompress) {
-                                    if (this@BackupDatabaseService.config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 4 else 3
-                                } else 0
-                            }.resultedValues!!.single().toBackupEntry()
-                            newEntries.add(backupEntry)
-                            backupEntry
-                        }
-                    } catch (e: IOException) {
-                        throw IOException("Error backing up file: $sourceFile", e)
+                    }?.takeIf { it.valid(this@BackupDatabaseService) }
+
+                    if (existing != null) {
+                        hashedEntries[path.toString()] = existing
+                        processedFiles.incrementAndGet()
+                        processedBytes.addAndGet(sourceFile.length())
+                        return@retry
                     }
+
+                    if (sourceFile.isDirectory) {
+                        entriesToInsert.add(
+                            EntryToInsert(
+                                path = path.toString(),
+                                size = 0,
+                                lastModified = sourceFile.lastModified(),
+                                isDirectory = true,
+                                hash = "",
+                                zippedSize = 0,
+                                compress = 0
+                            )
+                        )
+                        processedFiles.incrementAndGet()
+                        return@retry
+                    }
+
+                    val beforeSize = sourceFile.length()
+                    val beforeModified = sourceFile.lastModified()
+
+                    if (beforeSize <= MEMORY_THRESHOLD) {
+                        val shouldCompress = beforeSize > 1024
+                        val digest = MessageDigest.getInstance("SHA-256")
+                        val memoryStream = ByteArrayOutputStream(beforeSize.toInt().coerceAtMost(MEMORY_THRESHOLD))
+                        val buffer = ByteArray(65536)
+                        var attemptBytes = 0L
+                        try {
+                            if (shouldCompress) {
+                                this@BackupDatabaseService.wrapOutputStream(memoryStream).use { output ->
+                                    sourceFile.inputStream().use { input ->
+                                        var read: Int
+                                        while (input.read(buffer).also { read = it } > 0) {
+                                            digest.update(buffer, 0, read)
+                                            output.write(buffer, 0, read)
+                                            processedBytes.addAndGet(read.toLong())
+                                            attemptBytes += read
+                                        }
+                                    }
+                                }
+                            } else {
+                                sourceFile.inputStream().use { input ->
+                                    var read: Int
+                                    while (input.read(buffer).also { read = it } > 0) {
+                                        digest.update(buffer, 0, read)
+                                        memoryStream.write(buffer, 0, read)
+                                        processedBytes.addAndGet(read.toLong())
+                                        attemptBytes += read
+                                    }
+                                }
+                            }
+                        } catch (e: Throwable) {
+                            processedBytes.addAndGet(-attemptBytes)
+                            throw e
+                        }
+                        val sha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                        val zippedSize = memoryStream.size().toLong()
+
+                        val afterSize = sourceFile.length()
+                        val afterModified = sourceFile.lastModified()
+                        if (beforeSize != afterSize || beforeModified != afterModified) {
+                            error("File changed while creating backup, file: $path")
+                        }
+
+                        val blob = getBlobFile(sha256)
+                        if (!blob.exists()) {
+                            try {
+                                blob.writeBytes(memoryStream.toByteArray())
+                            } catch (e: IOException) {
+                                if (!blob.exists()) throw e
+                            }
+                        }
+
+                        val existingBlobEntry = dbEntriesByHash[sha256]
+                        val finalZippedSize = existingBlobEntry?.zippedSize ?: zippedSize
+                        val compressVal = existingBlobEntry?.compress ?: if (shouldCompress) {
+                            if (config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 4 else 3
+                        } else 0
+
+                        entriesToInsert.add(
+                            EntryToInsert(
+                                path = path.toString(),
+                                size = beforeSize,
+                                lastModified = beforeModified,
+                                isDirectory = false,
+                                hash = sha256,
+                                zippedSize = finalZippedSize,
+                                compress = compressVal.toByte()
+                            )
+                        )
+                    } else {
+                        val tempBlob = blobDir.resolve(".tmp").resolve(UUID.randomUUID().toString())
+                        val shouldCompress = beforeSize > 1024
+                        var sha256 = ""
+                        var zippedSize: Long
+                        var attemptBytes = 0L
+                        try {
+                            val digest = MessageDigest.getInstance("SHA-256")
+                            val buffer = ByteArray(65536)
+                            if (shouldCompress) {
+                                this@BackupDatabaseService.wrapOutputStream(tempBlob.outputStream()).use { output ->
+                                    sourceFile.inputStream().use { input ->
+                                        var read: Int
+                                        while (input.read(buffer).also { read = it } > 0) {
+                                            digest.update(buffer, 0, read)
+                                            output.write(buffer, 0, read)
+                                            processedBytes.addAndGet(read.toLong())
+                                            attemptBytes += read
+                                        }
+                                    }
+                                }
+                            } else {
+                                tempBlob.outputStream().use { output ->
+                                    sourceFile.inputStream().use { input ->
+                                        var read: Int
+                                        while (input.read(buffer).also { read = it } > 0) {
+                                            digest.update(buffer, 0, read)
+                                            output.write(buffer, 0, read)
+                                            processedBytes.addAndGet(read.toLong())
+                                            attemptBytes += read
+                                        }
+                                    }
+                                }
+                            }
+                            sha256 = digest.digest().joinToString("") { "%02x".format(it) }
+                            zippedSize = tempBlob.fileSize()
+
+                            val afterSize = sourceFile.length()
+                            val afterModified = sourceFile.lastModified()
+                            if (beforeSize != afterSize || beforeModified != afterModified) {
+                                tempBlob.deleteIfExists()
+                                error("File changed while creating backup, file: $path")
+                            }
+
+                            val blob = getBlobFile(sha256)
+                            if (blob.exists()) {
+                                tempBlob.deleteIfExists()
+                                val existingBlobEntry = dbEntriesByHash[sha256]
+                                val finalZippedSize = existingBlobEntry?.zippedSize ?: blob.fileSize()
+                                val compressVal = existingBlobEntry?.compress ?: if (shouldCompress) {
+                                    if (config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 4 else 3
+                                } else 0
+
+                                entriesToInsert.add(
+                                    EntryToInsert(
+                                        path = path.toString(),
+                                        size = beforeSize,
+                                        lastModified = beforeModified,
+                                        isDirectory = false,
+                                        hash = sha256,
+                                        zippedSize = finalZippedSize,
+                                        compress = compressVal.toByte()
+                                    )
+                                )
+                            } else {
+                                val compressVal = if (shouldCompress) {
+                                    if (config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 4 else 3
+                                } else 0
+                                needsCommit.add(
+                                    FileToCommit(
+                                        sourceFile = sourceFile,
+                                        path = path,
+                                        hash = sha256,
+                                        tempBlob = tempBlob,
+                                        size = beforeSize,
+                                        lastModified = beforeModified,
+                                        zippedSize = zippedSize,
+                                        compress = compressVal.toByte()
+                                    )
+                                )
+                            }
+                        } catch (e: Throwable) {
+                            processedBytes.addAndGet(-attemptBytes)
+                            tempBlob.deleteIfExists()
+                            throw e
+                        }
+                    }
+                    processedFiles.incrementAndGet()
                 }
-                processedBytes.addAndGet(sourceFile.length())
-                processedFiles.incrementAndGet()
-                entry
             }
         }.awaitAll()
-        require(files.size == entries.size)
+
+        // Phase 2: Finalize Blobs & DB entries (Instantaneous Rename/Move)
+        needsCommit.map { fileToCommit ->
+            @Suppress("SuspendFunctionOnCoroutineScope")
+            this.async(backupDispatcher) {
+                retry(5) {
+                    val sourceFile = fileToCommit.sourceFile
+                    val path = fileToCommit.path
+                    val sha256 = fileToCommit.hash
+                    val tempBlob = fileToCommit.tempBlob
+                    val zippedSize = fileToCommit.zippedSize
+                    val compressVal = fileToCommit.compress
+
+                    val blob = getBlobFile(sha256)
+                    if (blob.exists() && blob.fileSize() == zippedSize) {
+                        tempBlob.deleteIfExists()
+                    } else {
+                        blob.createParentDirectories()
+                        try {
+                            tempBlob.moveTo(blob, StandardCopyOption.REPLACE_EXISTING)
+                        } catch (e: IOException) {
+                            if (blob.exists() && blob.fileSize() == zippedSize) {
+                                tempBlob.deleteIfExists()
+                            } else {
+                                throw e
+                            }
+                        }
+                    }
+
+                    entriesToInsert.add(
+                        EntryToInsert(
+                            path = path.toString(),
+                            size = sourceFile.length(),
+                            lastModified = sourceFile.lastModified(),
+                            isDirectory = false,
+                            hash = sha256,
+                            zippedSize = zippedSize,
+                            compress = compressVal
+                        )
+                    )
+                }
+            }
+        }.awaitAll()
+
+        // Batch insert all new database entries in a single transaction
+        val insertedEntries = if (entriesToInsert.isNotEmpty()) {
+            dbQuery {
+                BackupEntryTable.batchInsert(entriesToInsert) { item ->
+                    this[BackupEntryTable.path] = item.path
+                    this[BackupEntryTable.size] = item.size
+                    this[BackupEntryTable.lastModified] = item.lastModified
+                    this[BackupEntryTable.isDirectory] = item.isDirectory
+                    this[BackupEntryTable.hash] = item.hash
+                    this[BackupEntryTable.zippedSize] = item.zippedSize
+                    this[BackupEntryTable.compress] = item.compress
+                }.map { it.toBackupEntry() }
+            }
+        } else {
+            emptyList()
+        }
+
+        insertedEntries.forEach { entry ->
+            hashedEntries[entry.path] = entry
+        }
+
+        val newEntries = insertedEntries.filter { it.hash.isNotEmpty() && !dbEntriesByHash.containsKey(it.hash) }
+
+        require(files.size == hashedEntries.size)
+        val entries = hashedEntries.values.toList()
         Path("debug-backup.json").writeText(Json.encodeToString(files.toList()))
         log.info("[X Backup] Backed up ${entries.size} files, ${newEntries.size} new, ${entries.size - newEntries.size} files reused (Time taken: ${"%.2f".format((System.currentTimeMillis() - timeStart) / 1000.0)}s)")
+        
+        backupPhase = BackupPhase.NONE
+
         if (config.discardEmptyBackups && !temporary && newEntries.isEmpty()) {
             return BackupResult(
                 success = false,
@@ -435,25 +627,29 @@ class BackupDatabaseService(
                 compressedSize = entries.sumOf { it.zippedSize },
                 addedSize = 0,
                 millis = System.currentTimeMillis() - timeStart,
+                totalFilesCount = entries.size,
+                filesChangedCount = 0,
+                filesReusedCount = entries.size
             )
         }
         val backup = dbQuery {
-            val backup = BackupTable.insert {
+            val backupRow = BackupTable.insert {
                 it[size] = entries.sumOf { it.size }
                 it[zippedSize] = entries.sumOf { it.zippedSize }
                 it[created] = System.currentTimeMillis()
                 it[this.comment] = comment
                 it[this.temporary] = temporary
                 it[this.metadata] = metadata
-            }.resultedValues!!.single().toBackup()
-            entries.forEach { entry ->
-                BackupEntryBackupTable.insert {
-                    it[this.backup] = backup.id
-                    it[this.entry] = entry.id
-                }
+            }.resultedValues!!.single()
+            val backupId = backupRow[BackupTable.id].value
+            
+            // Batch insert relations
+            BackupEntryBackupTable.batchInsert(entries) { entry ->
+                this[BackupEntryBackupTable.backup] = backupId
+                this[BackupEntryBackupTable.entry] = entry.id
             }
             // recheck
-            val entryList = backup.entries.filter {
+            val entryList = entries.filter {
                 !it.isDirectory &&
                         (!getBlobFile(it.hash).exists() || getBlobFile(it.hash).fileSize() != it.zippedSize)
             }
@@ -461,7 +657,17 @@ class BackupDatabaseService(
                 log.error(entryList.toString())
                 error("Backup failed, ${entryList.size} files not backed up")
             }
-            backup
+            Backup(
+                backupId,
+                backupRow[BackupTable.size],
+                backupRow[BackupTable.zippedSize],
+                backupRow[BackupTable.created],
+                backupRow[BackupTable.comment],
+                entries,
+                backupRow[BackupTable.temporary],
+                backupRow[BackupTable.cloudBackupUrl],
+                backupRow[BackupTable.metadata]
+            )
         }
         return BackupResult(
             true,
@@ -471,6 +677,9 @@ class BackupDatabaseService(
             backup.zippedSize,
             newEntries.sumOf { it.zippedSize },
             System.currentTimeMillis() - timeStart,
+            totalFilesCount = entries.size,
+            filesChangedCount = newEntries.size,
+            filesReusedCount = entries.size - newEntries.size
         )
     }
 
@@ -480,15 +689,30 @@ class BackupDatabaseService(
 
     suspend fun deleteBackupInternal(backup: IBackup) {
         syncDbQuery {
-            backup.entries.forEach { entry ->
-                if (BackupEntryBackupTable.selectAll().where {
-                        BackupEntryBackupTable.entry eq entry.id and
-                                (BackupEntryBackupTable.backup neq backup.id)
-                    }.empty()
-                ) {
-                    getBlobFile(entry.hash).toFile().delete()
-                    BackupEntryTable.deleteWhere {
-                        id eq entry.id
+            val entryIds = backup.entries.map { it.id }
+            if (entryIds.isNotEmpty()) {
+                val referencedEntryIds = BackupEntryBackupTable
+                    .select(BackupEntryBackupTable.entry)
+                    .where { 
+                        BackupEntryBackupTable.backup neq backup.id and 
+                        (BackupEntryBackupTable.entry inList entryIds)
+                    }
+                    .map { it[BackupEntryBackupTable.entry].value }
+                    .toSet()
+
+                val orphanedEntries = backup.entries.filter { it.id !in referencedEntryIds }
+                if (orphanedEntries.isNotEmpty()) {
+                    val orphanedIds = orphanedEntries.map { it.id }
+                    val op = BackupEntryTable.id inList orphanedIds
+                    BackupEntryTable.deleteWhere { op }
+                    
+                    // Delete blobs from disk
+                    orphanedEntries.forEach { entry ->
+                        try {
+                            getBlobFile(entry.hash).toFile().delete()
+                        } catch (e: Exception) {
+                            log.warn("Failed to delete orphaned blob for hash ${entry.hash}: ${e.message}")
+                        }
                     }
                 }
             }
@@ -501,7 +725,23 @@ class BackupDatabaseService(
     }
 
     internal suspend fun getBackupInternal(id: Int): Backup? = dbQuery {
-        BackupTable.selectAll().where { BackupTable.id eq id }.firstOrNull()?.toBackup()
+        val row = BackupTable.selectAll().where { BackupTable.id eq id }.firstOrNull() ?: return@dbQuery null
+        val entryRows = (BackupEntryBackupTable innerJoin BackupEntryTable)
+            .select(BackupEntryTable.id, BackupEntryTable.path, BackupEntryTable.size, BackupEntryTable.zippedSize, BackupEntryTable.lastModified, BackupEntryTable.isDirectory, BackupEntryTable.hash, BackupEntryTable.compress)
+            .where { BackupEntryBackupTable.backup eq id }
+            .toList()
+        
+        Backup(
+            id,
+            row[BackupTable.size],
+            row[BackupTable.zippedSize],
+            row[BackupTable.created],
+            row[BackupTable.comment],
+            entryRows.map { it.toBackupEntry() },
+            row[BackupTable.temporary],
+            row[BackupTable.cloudBackupUrl],
+            row[BackupTable.metadata]
+        )
     }
 
     override fun getBackup(id: Int): IBackup? = runBlocking { getBackupInternal(id) }
@@ -582,27 +822,33 @@ class BackupDatabaseService(
                                         it.copyTo(output)
                                     }
                                 }
-                                val hasher = org.apache.commons.codec.digest.Blake3.initHash()
-                                hasher.update(path.toFile().inputStream().readBytes())
-                                val checkAgain = hasher.doFinalize(32).joinToString("") { "%02x".format(it) }
-                                if (checkAgain != it.value.hash) {
-                                    val decompressedStream = when (it.value.compress) {
-                                        3 -> com.github.luben.zstd.ZstdInputStream(blob.toFile().inputStream().buffered())
-                                        4 -> net.jpountz.lz4.LZ4BlockInputStream(blob.toFile().inputStream().buffered())
-                                        else -> blob.toFile().inputStream().buffered()
-                                    }
-                                    val bytes = decompressedStream.use { stream -> stream.readBytes() }
-                                    val hasherExpected = org.apache.commons.codec.digest.Blake3.initHash()
-                                    hasherExpected.update(bytes)
-                                    val expectedBlake3 = hasherExpected.doFinalize(32).joinToString("") { "%02x".format(it) }
-                                    log.error(
-                                        "File hash mismatch, file: $path, expected: ${it.value.hash}, actual: $checkAgain, decompressed: $expectedBlake3" +
-                                                if (it.value.hash == expectedBlake3 && expectedBlake3 != checkAgain) " (writing file failed?)"
-                                                else if (it.value.hash != expectedBlake3 && expectedBlake3 == checkAgain) " (bad blake3 when creating backup?)"
-                                                else " (WTF???)"
-                                    )
-                                    path.writeBytes(bytes)
-                                }
+                                 val fileBytes = path.toFile().readBytes()
+                                 
+                                 // Check using SHA-256 (default)
+                                 val shaHasher = MessageDigest.getInstance("SHA-256")
+                                 shaHasher.update(fileBytes)
+                                 val checkAgain = shaHasher.digest().joinToString("") { "%02x".format(it) }
+                                 
+                                 if (checkAgain != it.value.hash) {
+                                     val decompressedStream = when (it.value.compress) {
+                                         3 -> com.github.luben.zstd.ZstdInputStream(blob.toFile().inputStream().buffered())
+                                         4 -> net.jpountz.lz4.LZ4BlockInputStream(blob.toFile().inputStream().buffered())
+                                         else -> blob.toFile().inputStream().buffered()
+                                     }
+                                     val bytes = decompressedStream.use { stream -> stream.readBytes() }
+                                     
+                                     val shaHasherExpected = MessageDigest.getInstance("SHA-256")
+                                     shaHasherExpected.update(bytes)
+                                     val expectedHash = shaHasherExpected.digest().joinToString("") { "%02x".format(it) }
+                                     
+                                     log.error(
+                                         "File hash mismatch, file: $path, expected: ${it.value.hash}, actual: $checkAgain, decompressed: $expectedHash" +
+                                                 if (it.value.hash == expectedHash && expectedHash != checkAgain) " (writing file failed?)"
+                                                 else if (it.value.hash != expectedHash && expectedHash == checkAgain) " (bad hash when creating backup?)"
+                                                 else " (WTF???)"
+                                     )
+                                     path.writeBytes(bytes)
+                                 }
                                 require(path.fileSize() == it.value.size) {
                                     "File size mismatch, file: $path, expected: ${it.value.size}, actual: ${path.fileSize()}"
                                 }
@@ -647,10 +893,13 @@ class BackupDatabaseService(
      */
     override fun check(backup: IBackup): Boolean {
         var valid = true
+        val checkedHashes = HashSet<String>()
         backup.entries.forEach {
-            val blobFile = getBlobFile(it.hash)
             if (it.isDirectory) return@forEach
-            else if (!blobFile.exists()) {
+            if (!checkedHashes.add(it.hash)) return@forEach
+            
+            val blobFile = getBlobFile(it.hash)
+            if (!blobFile.exists()) {
                 log.error("Blob not found for file ${it.path}, hash: ${it.hash}")
                 valid = false
             }
@@ -686,28 +935,37 @@ class BackupDatabaseService(
                 input.close()
             }
         }
-        val hasher = org.apache.commons.codec.digest.Blake3.initHash()
+        val hasher = MessageDigest.getInstance("SHA-256")
         hasher.update(stream.toByteArray())
-        val blake3 = hasher.doFinalize(32).joinToString("") { "%02x".format(it) }
-        val file = getBlobFile(blake3)
+        val sha256 = hasher.digest().joinToString("") { "%02x".format(it) }
+        val file = getBlobFile(sha256)
         if (!file.exists()) {
             file.createParentDirectories().createFile()
             withContext(Dispatchers.IO) {
                 stream.writeTo(file.outputStream())
             }
         }
-        return blake3
+        return sha256
     }
 
     suspend fun packBackup(backup: Backup) {
         dbQuery {
-            val entryList = backup.entries.filter {
+            val candidateEntries = backup.entries.filter {
                 !it.isDirectory && it.size < 1024 * 1024 * 50 // 50MB
-                        && BackupEntryBackupTable.selectAll().where {
-                    BackupEntryBackupTable.entry eq it.id and
-                            (BackupEntryBackupTable.backup neq backup.id)
-                }.empty()
             }
+            if (candidateEntries.isEmpty()) return@dbQuery
+            
+            val entryIds = candidateEntries.map { it.id }
+            val referencedEntryIds = BackupEntryBackupTable
+                .select(BackupEntryBackupTable.entry)
+                .where { 
+                    BackupEntryBackupTable.backup neq backup.id and 
+                    (BackupEntryBackupTable.entry inList entryIds)
+                }
+                .map { it[BackupEntryBackupTable.entry].value }
+                .toSet()
+
+            val entryList = candidateEntries.filter { it.id !in referencedEntryIds }
             if (entryList.size < 10) return@dbQuery
             val packed = packFiles(entryList)
             val blobSize = getBlobFile(packed).fileSize()
@@ -737,7 +995,7 @@ class BackupDatabaseService(
                 val input = requireNotNull(it.getInputStream(this)) {
                     "Blob not found for file ${it.path}, hash: ${it.hash}"
                 }
-                input.copyTo(outputStream)
+                input.copyTo(outputStream, 65536)
                 input.close()
             }
             done++
@@ -762,11 +1020,11 @@ class BackupDatabaseService(
             if (!blobFile.exists()) {
                 if (shouldCompress) {
                     wrapOutputStream(blobFile.outputStream().buffered()).use { output ->
-                        inputStream.copyTo(output)
+                        inputStream.copyTo(output, 65536)
                     }
                 } else {
                     blobFile.outputStream().use { output ->
-                        inputStream.copyTo(output)
+                        inputStream.copyTo(output, 65536)
                     }
                 }
             }
@@ -790,13 +1048,15 @@ class BackupDatabaseService(
 
     suspend fun deleteUnusedBlobs(): Int {
         val used = dbQuery {
-            val column = Substring(BackupEntryTable.hash, intLiteral(3), intLiteral(30))
-            BackupEntryTable.select(
-                column // 32 -2 = 30
-            ).withDistinct(true).map { row -> row[column] }
+            BackupEntryTable.select(BackupEntryTable.hash)
+                .withDistinct(true)
+                .map { row -> row[BackupEntryTable.hash] }
         }.toSet()
-        val unused = getBlobFile("").toFile().walk().filter { it.isFile }.filterNot {
-            it.name in used
+        val unused = blobDir.toFile().walk().filter { it.isFile }.filter { file ->
+            file.parentFile.name.length == 2 && file.parentFile.parentFile == blobDir.toFile()
+        }.filterNot { file ->
+            val hash = file.parentFile.name + file.name
+            hash in used
         }.toList()
         log.info("Deleting ${unused.size} unused blobs")
         unused.forEach {
@@ -826,16 +1086,65 @@ class BackupDatabaseService(
 
     override fun listBackups(offset: Int, limit: Int): List<Backup> {
         return transaction {
-            BackupTable.selectAll()
+            val backupRows = BackupTable.selectAll()
                 .orderBy(BackupTable.id to SortOrder.DESC)
                 .limit(limit)
                 .offset(offset.toLong()).toList()
-                .map { it.toBackup() }
+
+            if (backupRows.isEmpty()) return@transaction emptyList()
+
+            val backupIds = backupRows.map { it[BackupTable.id].value }
+
+            val entryRows = (BackupEntryBackupTable innerJoin BackupEntryTable)
+                .select(BackupEntryBackupTable.backup, BackupEntryTable.id, BackupEntryTable.path, BackupEntryTable.size, BackupEntryTable.zippedSize, BackupEntryTable.lastModified, BackupEntryTable.isDirectory, BackupEntryTable.hash, BackupEntryTable.compress)
+                .where { BackupEntryBackupTable.backup inList backupIds }
+                .toList()
+
+            val entriesByBackupId = entryRows.groupBy(
+                keySelector = { it[BackupEntryBackupTable.backup].value },
+                valueTransform = { it.toBackupEntry() }
+            )
+
+            backupRows.map { row ->
+                val id = row[BackupTable.id].value
+                val entries = entriesByBackupId[id] ?: emptyList()
+                Backup(
+                    id,
+                    row[BackupTable.size],
+                    row[BackupTable.zippedSize],
+                    row[BackupTable.created],
+                    row[BackupTable.comment],
+                    entries,
+                    row[BackupTable.temporary],
+                    row[BackupTable.cloudBackupUrl],
+                    row[BackupTable.metadata]
+                )
+            }
         }
     }
 
     suspend fun getLatestBackup(): Backup? = dbQuery {
-        BackupTable.selectAll().lastOrNull()?.toBackup()
+        val row = BackupTable.selectAll()
+            .orderBy(BackupTable.id to SortOrder.DESC)
+            .limit(1)
+            .firstOrNull() ?: return@dbQuery null
+        val id = row[BackupTable.id].value
+        val entryRows = (BackupEntryBackupTable innerJoin BackupEntryTable)
+            .select(BackupEntryTable.id, BackupEntryTable.path, BackupEntryTable.size, BackupEntryTable.zippedSize, BackupEntryTable.lastModified, BackupEntryTable.isDirectory, BackupEntryTable.hash, BackupEntryTable.compress)
+            .where { BackupEntryBackupTable.backup eq id }
+            .toList()
+        
+        Backup(
+            id,
+            row[BackupTable.size],
+            row[BackupTable.zippedSize],
+            row[BackupTable.created],
+            row[BackupTable.comment],
+            entryRows.map { it.toBackupEntry() },
+            row[BackupTable.temporary],
+            row[BackupTable.cloudBackupUrl],
+            row[BackupTable.metadata]
+        )
     }
 
     override fun backupCount() = transaction {
@@ -848,25 +1157,7 @@ class BackupDatabaseService(
     }
 
     companion object {
-        private fun ResultRow.toBackup(): Backup {
-            val id = this[BackupTable.id].value
-            val entries = BackupEntryBackupTable.select(BackupEntryBackupTable.entry).where {
-                BackupEntryBackupTable.backup eq id
-            }
-            return Backup(
-                id,
-                this[BackupTable.size],
-                this[BackupTable.zippedSize],
-                this[BackupTable.created],
-                this[BackupTable.comment],
-                BackupEntryTable.selectAll().where {
-                    BackupEntryTable.id inSubQuery entries
-                }.map { it.toBackupEntry() },
-                this[BackupTable.temporary],
-                this[BackupTable.cloudBackupUrl],
-                this[BackupTable.metadata]
-            )
-        }
+        private const val MEMORY_THRESHOLD = 5 * 1024 * 1024 // 5 MB
 
         private fun ResultRow.toBackupEntry() = BackupEntry(
             this[BackupEntryTable.id].value,

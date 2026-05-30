@@ -1,3 +1,11 @@
+## 1.3.0
+- Dropped support for BLAKE3 hashing algorithm. Standardized exclusively on JVM-native SHA-256 for integrity verification and content-addressing.
+- Combined the sequential hashing and compression progress phases into a single unified real-time progress tracker showing total bytes and files processed.
+- Cleaned up restoration verification logic and optimized code efficiency.
+- Optimized progress logging.
+- Added remote connection pre-verification for Git (using git ls-remote) and directory (absolute path checks) targets before uploading.
+- Optimized backup creation database performance
+
 ## 1.2.3
 - Added remote backup support (Git push and File/Directory mirror copies).
 - Added mounted network directory failsafes and configurable absolute blob path directories.
