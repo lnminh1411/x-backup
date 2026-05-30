@@ -41,7 +41,7 @@ graph TD
 *   [BackupDatabaseService.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/BackupDatabaseService.kt):
     *   **Responsibility**: Implements `XBackupKotlinAsyncApi`. Connects to the SQLite database via JetBrains Exposed.
     *   **Key Logic**:
-        *   *Content-Addressable Storage (CAS)*: Walks files, computes BLAKE3 hashes, and compresses newly encountered files into the blob store. Relies on `BackupEntryTable`, `BackupTable`, and `BackupEntryBackupTable` to achieve perfect file-level deduplication.
+        *   *Content-Addressable Storage (CAS)*: Walks files, computes BLAKE3 hashes, and compresses newly encountered files into the blob store. Relies on a shared `limitedParallelism` dispatcher to prevent thread flooding, logging the elapsed duration upon completion. Relies on `BackupEntryTable`, `BackupTable`, and `BackupEntryBackupTable` to achieve perfect file-level deduplication.
         *   *ZSTD / LZ4 Compression*: Supports ZSTD (default, configurable levels 1-5) and LZ4 (fast, levels 1-5) compression. Legacy GZIP and ZIP compressions are no longer supported. Files under 1KB are stored uncompressed to avoid compression overhead.
         *   *Restoration*: Compares target directory state with database indexes, deletes unindexed files, and streams blobs back to disk while validating BLAKE3 integrity.
         *   *GC/Packing*: Bundles files smaller than 50MB into joint Zip files to keep file system inode counts low, and garbage-collects orphaned blobs (`deleteUnusedBlobs`).

@@ -240,11 +240,13 @@ class BackupDatabaseService(
         val timeStart = System.currentTimeMillis()
 
         val newEntries = ConcurrentHashMap.newKeySet<BackupEntry>()
+        val limit = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
+        val backupDispatcher = Dispatchers.IO.limitedParallelism(limit)
         val entries = root.normalize().toFile().walk().filter {
             !shouldIgnore(it) && predicate(it.toPath())
         }.map { sourceFile ->
             @Suppress("SuspendFunctionOnCoroutineScope")
-            this.async(Dispatchers.IO.limitedParallelism(Runtime.getRuntime().availableProcessors() / 2)) {
+            this.async(backupDispatcher) {
                 retry(5) {
                     try {
                         val path = root.normalize().relativize(sourceFile.toPath()).normalize()
@@ -379,7 +381,7 @@ class BackupDatabaseService(
         }.toList().awaitAll()
         require(files.size == entries.size)
         Path("debug-backup.json").writeText(Json.encodeToString(files.toList()))
-        log.info("[X Backup] Backed up ${entries.size} files, ${newEntries.size} new, ${entries.size - newEntries.size} files reused")
+        log.info("[X Backup] Backed up ${entries.size} files, ${newEntries.size} new, ${entries.size - newEntries.size} files reused (Time taken: ${"%.2f".format((System.currentTimeMillis() - timeStart) / 1000.0)}s)")
         if (config.discardEmptyBackups && !temporary && newEntries.isEmpty()) {
             return BackupResult(
                 success = false,
@@ -507,8 +509,10 @@ class BackupDatabaseService(
         val verbose = map.size < 100
         log.info("[X Backup] ${map.size} files to restore")
         Path("debug-restore.json").writeText(Json.encodeToString(map.keys.toList()))
+        val limit = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
+        val restoreDispatcher = Dispatchers.IO.limitedParallelism(limit)
         val deferredList = map.map {
-            this@BackupDatabaseService.async {
+            this@BackupDatabaseService.async(restoreDispatcher) {
                 var worked = false
                 val path = target.resolve(it.key).normalize().createParentDirectories()
                 if (it.value.lastModified != path.toFile().lastModified() || it.value.size != path.fileSize()) {
