@@ -46,6 +46,11 @@ class BackupDatabaseService(
      */
     override var activeTaskProgress: Int = -1
 
+    val totalBytesToProcess = java.util.concurrent.atomic.AtomicLong(0)
+    val processedBytes = java.util.concurrent.atomic.AtomicLong(0)
+    val totalFilesToProcess = java.util.concurrent.atomic.AtomicInteger(0)
+    val processedFiles = java.util.concurrent.atomic.AtomicInteger(0)
+
     init {
         require(blobDir.isAbsolute && blobDir == blobDir.normalize()) {
             "Blob directory must be absolute and normalized"
@@ -99,6 +104,12 @@ class BackupDatabaseService(
         "x_backup.db-wal",
         "x_backup.db-shm",
         "x_backup.db-journal",
+        "x_backup.db.legacy",
+        "x_backup.db-wal.legacy",
+        "x_backup.db-shm.legacy",
+        "x_backup.db-journal.legacy",
+        "x_backup.db.back.legacy",
+        "chunk_tickets.dat"
     ) + config.ignoredFiles
 
     override val coroutineContext: CoroutineContext
@@ -226,6 +237,26 @@ class BackupDatabaseService(
         return XBackupStatus(blobDiskUsage, actualUsage, backupCount, latestBackup)
     }
 
+    fun verifyDirectoryWritable(path: Path): Boolean {
+        if (!path.exists()) {
+            try {
+                path.createDirectories()
+            } catch (e: Exception) {
+                return false
+            }
+        }
+        if (!path.isDirectory()) return false
+        return try {
+            val testFile = path.resolve(".xb_write_test_" + UUID.randomUUID().toString())
+            testFile.writeText("test")
+            val content = testFile.readText()
+            testFile.deleteIfExists()
+            content == "test"
+        } catch (e: Exception) {
+            false
+        }
+    }
+
     suspend fun createBackup(
         root: Path,
         comment: String,
@@ -233,6 +264,9 @@ class BackupDatabaseService(
         metadata: JsonObject? = null,
         predicate: (Path) -> Boolean = { true },
     ): BackupResult {
+        if (!verifyDirectoryWritable(blobDir)) {
+            error("Backup cancelled: Storage directory '$blobDir' is disconnected, not found, or not writable!")
+        }
         if (blobDir.startsWith(root.absolute().normalize())) {
             error("Blob directory cannot be inside the backup directory")
         }
@@ -242,12 +276,19 @@ class BackupDatabaseService(
         val newEntries = ConcurrentHashMap.newKeySet<BackupEntry>()
         val limit = (Runtime.getRuntime().availableProcessors() / 2).coerceAtLeast(1)
         val backupDispatcher = Dispatchers.IO.limitedParallelism(limit)
-        val entries = root.normalize().toFile().walk().filter {
+        val allFiles = root.normalize().toFile().walk().filter {
             !shouldIgnore(it) && predicate(it.toPath())
-        }.map { sourceFile ->
+        }.toList()
+
+        totalFilesToProcess.set(allFiles.size)
+        totalBytesToProcess.set(allFiles.sumOf { it.length() })
+        processedFiles.set(0)
+        processedBytes.set(0)
+
+        val entries = allFiles.map { sourceFile ->
             @Suppress("SuspendFunctionOnCoroutineScope")
             this.async(backupDispatcher) {
-                retry(5) {
+                val entry = retry(5) {
                     try {
                         val path = root.normalize().relativize(sourceFile.toPath()).normalize()
                         files.add(path.toString())
@@ -377,8 +418,11 @@ class BackupDatabaseService(
                         throw IOException("Error backing up file: $sourceFile", e)
                     }
                 }
+                processedBytes.addAndGet(sourceFile.length())
+                processedFiles.incrementAndGet()
+                entry
             }
-        }.toList().awaitAll()
+        }.awaitAll()
         require(files.size == entries.size)
         Path("debug-backup.json").writeText(Json.encodeToString(files.toList()))
         log.info("[X Backup] Backed up ${entries.size} files, ${newEntries.size} new, ${entries.size - newEntries.size} files reused (Time taken: ${"%.2f".format((System.currentTimeMillis() - timeStart) / 1000.0)}s)")
@@ -543,8 +587,8 @@ class BackupDatabaseService(
                                 val checkAgain = hasher.doFinalize(32).joinToString("") { "%02x".format(it) }
                                 if (checkAgain != it.value.hash) {
                                     val decompressedStream = when (it.value.compress) {
-                                        1 -> net.jpountz.lz4.LZ4BlockInputStream(blob.toFile().inputStream().buffered())
                                         3 -> com.github.luben.zstd.ZstdInputStream(blob.toFile().inputStream().buffered())
+                                        4 -> net.jpountz.lz4.LZ4BlockInputStream(blob.toFile().inputStream().buffered())
                                         else -> blob.toFile().inputStream().buffered()
                                     }
                                     val bytes = decompressedStream.use { stream -> stream.readBytes() }

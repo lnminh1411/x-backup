@@ -34,43 +34,45 @@ graph TD
 
 ### A. The API Module (`:api`)
 *   [XBackupApi.java](file:///e:/x-backup/api/src/main/java/com/github/zly2006/xbackup/api/XBackupApi.java): Serves as the static entry point hook (`getInstance`/`setInstance`). Exposes high-level methods to manage backup records, check integrity, delete backups, and get blob locations.
-*   [IBackup.kt](file:///e:/x-backup/api/src/main/java/com/github/zly2006/xbackup/api/IBackup.kt) & [IBackupEntry.kt](file:///e:/x-backup/api/src/main/java/com/github/zly2006/xbackup/api/IBackupEntry.kt): Immutable data contracts representing a completed backup metadata envelope and the individual files indexed within it.
+*   [IBackup.kt](file:///e:/x-backup/api/src/main/java/com/github/zly2006/xbackup/api/IBackup.kt) & [IBackupEntry.kt](file:///e:/x-backup/api/src/main/java/com/github/zly2006/xbackup/api/IBackupEntry.kt): Immutable data contracts representing a completed backup metadata envelope and the individual files indexed within it. Entries track content identity via a **BLAKE3 hash**.
 *   [XBackupKotlinAsyncApi.kt](file:///e:/x-backup/api/src/main/java/com/github/zly2006/xbackup/api/XBackupKotlinAsyncApi.kt): Provides Kotlin coroutine extensions (such as `suspend fun restore`) and raw SQLite database transaction hooks (`dbQuery`).
 
 ### B. The Common Backend Module (`:common`)
 *   [BackupDatabaseService.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/BackupDatabaseService.kt):
     *   **Responsibility**: Implements `XBackupKotlinAsyncApi`. Connects to the SQLite database via JetBrains Exposed.
     *   **Key Logic**:
-        *   *Content-Addressable Storage (CAS)*: Walks files, computes BLAKE3 hashes, and compresses newly encountered files into the blob store. Relies on a shared `limitedParallelism` dispatcher to prevent thread flooding, logging the elapsed duration upon completion. Relies on `BackupEntryTable`, `BackupTable`, and `BackupEntryBackupTable` to achieve perfect file-level deduplication.
+        *   *Content-Addressable Storage (CAS)*: Walks files, computes **BLAKE3 hashes** using Apache Commons Codec (`1.22.0`), and compresses newly encountered files into the blob store. Relies on `BackupEntryTable`, `BackupTable`, and `BackupEntryBackupTable` to achieve perfect file-level deduplication.
+        *   *Parallel Resource Limiting*: Throttles coroutine thread pool usage during backup walks and file hashing using `.limitedParallelism(availableProcessors / 2)` to prevent CPU exhaustion on large servers.
         *   *ZSTD / LZ4 Compression*: Supports ZSTD (default, configurable levels 1-5) and LZ4 (fast, levels 1-5) compression. Legacy GZIP and ZIP compressions are no longer supported. Files under 1KB are stored uncompressed to avoid compression overhead.
-        *   *Restoration*: Compares target directory state with database indexes, deletes unindexed files, and streams blobs back to disk while validating BLAKE3 integrity.
+        *   *Restoration*: Compares target directory state with database indexes, deletes unindexed files, and streams blobs back to disk using a limited coroutine dispatcher (`limitedParallelism`) while validating BLAKE3 integrity.
         *   *GC/Packing*: Bundles files smaller than 50MB into joint Zip files to keep file system inode counts low, and garbage-collects orphaned blobs (`deleteUnusedBlobs`).
         *   *Windows Lock Resilience*: Employs `clearDatabase()` which drops and recreates schema table by table within database transactions to resolve SQLite file locking issues during `/xb delete-all` on Windows.
 *   [Config.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/Config.kt): Configures backup intervals, exclusions, and retention options.
     *   *Standard GFS Retention Policy*: Implements integer-based Grandfather-Father-Son (GFS) configuration parameters: `keepLast` (min 1), `keepDaily`, `keepWeekly`, and `keepMonthly`, alongside temporary backup cleanup (`keepTemporary`).
     *   *Backup Optimization Settings*: Configures options like `pauseAutomaticBackupsWithoutPlayers` and `discardEmptyBackups` to prevent redundant backups.
+    *   *Broadcast Controls*: Exposes configuration variables `broadcastBackupInChat` and `onlyBroadcastToOp` to control chat logging and reduce log spam.
 *   [I18n.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/I18n.kt): Resolves translation JSON resources (`en_us.json`, etc.) for chat prompts and command errors.
-*   [Utils.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/Utils.kt): Houses generic backend retry mechanisms and input stream checksum computing utilities (`retry`, `digest`).
+*   [Utils.kt](file:///e:/x-backup/common/src/main/kotlin/com/github/zly2006/xbackup/Utils.kt): Houses generic backend retry mechanisms (with special-cased `CancellationException` pass-through) and input stream BLAKE3 / checksum computing utilities (`retry`, `digest`).
 
 ### C. The Main Mod Module (`/src`)
 *   [XBackup.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/XBackup.kt):
     *   **Responsibility**: Main Fabric `ModInitializer`.
     *   **Interactions**: 
         *   Hooks into server startup (`SERVER_STARTED`) to initialize the database and Database Service.
-        *   Spins up the background auto-backup crontab coroutine thread.
+        *   Spins up the background auto-backup crontab coroutine thread, utilizing `lastBackupAttemptTime` and a log rate limiter (`hasLoggedSkip`) to prevent scheduled backup status spam in the console.
         *   Enforces dynamic config updates for backup storage paths at runtime without requiring a server restart.
-        *   *Database Migration*: Automatically checks for legacy MD5-era and GZIP/ZIP databases on startup and renames them to `x_backup.db.legacy` (along with any associated `-wal` and `-shm` files) to prevent conflicts and ensure safety. Scans both the main database inside the world folder and all snapshot databases inside the `xb.backups/` directory.
+        *   *Database Migration*: Automatically checks for legacy databases on startup and renames them to `x_backup.db.legacy` (along with `.db-wal` and `.db-shm` files to prevent conflicts). It scans both the active `x_backup.db` and all backup databases stored inside the `xb.backups/` snapshot directory. It identifies legacy databases by checking for GZIP/ZIP (`compress = 1` or `compress = 2`) or checking if the hash values are 32-character hex strings (legacy MD5 hashes instead of 64-character BLAKE3 hashes).
         *   *Player Activity Tracker*: Tracks player connections to pause automatic backups when no players are active (`playersLoggedOnSinceLastBackup` flag).
 *   [Commands.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/Commands.kt):
     *   **Responsibility**: Registers command dispatch trees under `/xb` (and `/mirror` if in mirror mode) using Brigadier.
     *   **Interactions**: Exposes backup creation (`/xb create`), deletion (`/xb delete`), list queries (`/xb list`), and info stats.
-        *   `/xb delete-all`: Completely wipes the database, deletes all blobs (confirm required), and recursively deletes the `xb.backups` snapshot database directory.
+        *   `/xb delete-all`: Completely wipes the database, deletes all blobs, and recursively deletes the `xb.backups/` snapshot directory (confirm required).
         *   *Regional Restores*: `/xb restore <id> --chunk <from> <to>` reads block coordinates to isolate changes to affected `.mca`/`.mcc` region files only.
         *   *Other Commands*: Config reloading, backup checking (`check`), zipping, and manual GFS pruning.
 *   [RestartUtils.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/RestartUtils.kt): Evaluates Java Runtime Management parameters to generate native restart command lists (Unix/Windows) to hot-restart the JVM.
 *   [Task.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/Task.kt): Interface defining the contract for asynchronous operations with status, timing tracking, and progress metrics.
-*   [Utils.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/Utils.kt): Extends `MinecraftServer` and `CommandSourceStack` with helper functions for auto-saving toggle, sync writes execution, and conditional chat broadcasts (utilizing operator permission level check fallbacks).
-*   [gui/ConfigGui.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/gui/ConfigGui.kt): Yet Another Config Lib (YACL) options GUI mapping general settings, GFS parameters, compression levels, and chat broadcast settings.
+*   [Utils.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/Utils.kt): Extends `MinecraftServer` and `CommandSourceStack` with helper functions for auto-saving toggle, sync writes execution, system messages, and chat broadcasts (which filter messages based on OP level and console log routing).
+*   [gui/ConfigGui.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/gui/ConfigGui.kt): Yet Another Config Lib (YACL) options GUI mapping general settings, GFS parameters, Chat Notifications, and ZSTD/LZ4 compression levels.
 *   [client/ModMenuIntegration.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/client/ModMenuIntegration.kt): Registers the config screen with ModMenu.
 *   [gui/BackupsGui.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/gui/BackupsGui.kt): PolyLib modular GUI displaying and managing world backups in the Singleplayer Select World menu.
 *   [gui/RestoreInfoScreen.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/gui/RestoreInfoScreen.kt): Minecraft screen rendering restoration progress. Allows players to reopen the world or close the screen.
@@ -107,7 +109,10 @@ sequenceDiagram
         alt pauseAutomaticBackupsWithoutPlayers Enabled
             Mod->>MS: Get online player count
             alt Players Offline & No Active Logins since last backup
-                Mod-->>Admin: Skip scheduled backup (Log: No changes)
+                alt skip log has not been printed yet
+                    Mod->>Mod: Log "Skipping scheduled backup..." (once)
+                end
+                Mod-->>Admin: Skip scheduled backup (Silent delay)
             end
         end
     end
@@ -117,7 +122,7 @@ sequenceDiagram
     Mod->>DB: createBackup(worldPath)
     activate DB
     DB->>Disk: Walk world files
-    loop Each File
+    loop Each File (Parallelized: Thread limit = availableProcessors / 2)
         DB->>DB: Check if ignored (Config::ignoredFiles)
         DB->>DB: Check if file matches existing DB entry (path, directory state, size, lastModified)
         alt Cache Miss
@@ -127,8 +132,9 @@ sequenceDiagram
             else Size <= 1024 bytes
                 DB->>Disk: Save uncompressed
             end
+            DB->>DB: Compute BLAKE3 Hash (Apache Commons Codec)
         end
-        DB->>DB: Record and reference in SQLite database
+        DB->>DB: Record BLAKE3 hash & reference in SQLite database
     end
     
     alt discardEmptyBackups Enabled & No New Blobs Added
@@ -142,11 +148,19 @@ sequenceDiagram
         Mod->>Disk: Perform Database SQLite 'VACUUM INTO'
         Mod->>Disk: Move to ./xb.backups/<id>/x_backup.db
         Mod->>Disk: Prune extra database backups (keep newest 5)
-        Mod-->>Admin: Broadcast success message
+        note right of Mod: Chat Broadcast Control
+        alt broadcastBackupInChat Enabled
+            alt onlyBroadcastToOp Enabled
+                Mod->>MS: Send system message only to OP players
+            else
+                Mod->>MS: Broadcast message to all players
+            end
+        end
+        Mod-->>Admin: Log success message to server log with duration (s)
     else EMPTY_BACKUP
         Mod-->>Admin: Log: Backup cancelled (no changes detected)
     else error
-        Mod-->>Admin: Broadcast failure message
+        Mod-->>Admin: Log failure message to server log
     end
 
     Mod->>MS: setAutoSaving(true) (Unlock files)
@@ -185,10 +199,10 @@ sequenceDiagram
         Mixin->>DB: restore(id, targetDir)
         activate DB
         DB->>DB: Scan files & delete un-indexed assets (if not ignored)
-        loop Each File in Backup
+        loop Each File in Backup (Parallelized: Thread limit = availableProcessors / 2)
             DB->>DB: Retrieve compressed stream from blob
             DB->>DB: Decompress (uncompressed, ZSTD, or LZ4) & write to world
-            DB->>DB: Validate checksum matches expected BLAKE3
+            DB->>DB: Validate checksum matches expected BLAKE3 hash
         end
         DB-->>Mixin: Restoration Completed
         deactivate DB
@@ -266,5 +280,6 @@ Dependencies are declared globally in `gradle.properties` and resolved contextua
 | **Yet Another Config Lib (YACL)** | Configuration GUI | CompileOnly / Runtime | Used to build modern configuration screen; version `3` |
 | **PolyLib** (`deps.poly_lib`) | Client Modular GUI controls | CompileOnly / Optional | Enables the "回" backup button in Singleplayer; version `26.1.2-2.0.6` |
 | **LuckPerms / Perms API** | Permission validation | CompileOnly | Extracted from `compat-fake-source` |
+| **Apache Commons Codec** | BLAKE3 hashing utilities | Shadowed & compiled | Pure-Java BLAKE3 implementation; version `1.22.0` |
 | **ZSTD-JNI** | ZStandard compression | Shadowed & compiled | Used for default backup compression |
 | **LZ4-Java** | LZ4 compression | Shadowed & compiled | Used for high-speed backup compression |

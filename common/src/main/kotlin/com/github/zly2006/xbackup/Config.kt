@@ -140,6 +140,24 @@ class Config {
     }
 
     @Serializable
+    class RemoteConfig {
+        @SerialName("enabled")
+        var enabled = false
+
+        @SerialName("remote_url")
+        var remoteUrl = ""
+
+        @SerialName("sync_on_backup")
+        var syncOnBackup = true
+
+        @SerialName("git_branch")
+        var gitBranch = "main"
+
+        @SerialName("force_push")
+        var forcePush = false
+    }
+
+    @Serializable
     enum class CompressionAlgorithm {
         @SerialName("zstd") ZSTD,
         @SerialName("lz4") LZ4
@@ -154,6 +172,7 @@ class Config {
         "DistantHorizons.sqlite",
         "DistantHorizons.sqlite-shm",
         "DistantHorizons.sqlite-wal",
+        "chunk_tickets.dat",
     )
 
     @SerialName("blob_path")
@@ -176,6 +195,12 @@ class Config {
 
     @SerialName("prune")
     val pruneConfig = PruneConfig()
+
+    @SerialName("remote")
+    val remoteConfig = RemoteConfig()
+
+    @SerialName("progress_log_interval")
+    var progressLogInterval = 5
 
     @SerialName("compression_algorithm")
     var compressionAlgorithm: CompressionAlgorithm = CompressionAlgorithm.ZSTD

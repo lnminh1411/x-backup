@@ -1,3 +1,15 @@
+## 1.2.3
+- Added remote backup support (Git push and File/Directory mirror copies).
+- Added mounted network directory failsafes and configurable absolute blob path directories.
+- Added asynchronous progress logging (Percentage, sizes, elapsed time) for operations taking >10 seconds.
+- Fixed singleplayer client reopening crashes.
+- Excluded `.legacy` files and `chunk_tickets.dat` from backups to prevent size mismatch and locking errors.
+- Fixed LZ4 decompression restore fallback mapping bug.
+
+## 1.2.2
+- Added coroutine concurrency dispatcher limits for backups and restores.
+- Added backup duration logging in console.
+
 ## 1.2.1
 - Extended the legacy MD5 and compression database migration checks to recursively scan and rename databases (along with their SQLite WAL/SHM files) stored under the `xb.backups/` snapshot directory.
 - Updated `/xb delete-all confirm` to fully clean up and delete the `./xb.backups/` snapshot directory from the instance.

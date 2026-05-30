@@ -43,7 +43,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.2.2"
+    const val MOD_VERSION = "1.2.3"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -286,15 +286,20 @@ object XBackup : ModInitializer {
                                 server.setAutoSaving(false)
                                 disableSaving = true
                             }
-                            val result = service.createBackup(
-                                server.getWorldPath(LevelResource.ROOT).toAbsolutePath(),
-                                I18n["message.xb.scheduled_backup"],
-                                metadata = buildJsonObject {
-                                    put("scheduled", true)
-                                    put("interval", config.backupInterval)
-                                    put("mod_ver", MOD_VERSION)
-                                }
-                            )
+                            val progressJob = startProgressTracker("Scheduled Backup")
+                            val result = try {
+                                service.createBackup(
+                                    server.getWorldPath(LevelResource.ROOT).toAbsolutePath(),
+                                    I18n["message.xb.scheduled_backup"],
+                                    metadata = buildJsonObject {
+                                        put("scheduled", true)
+                                        put("interval", config.backupInterval)
+                                        put("mod_ver", MOD_VERSION)
+                                    }
+                                )
+                            } finally {
+                                progressJob.cancel()
+                            }
                             if (result.success) {
                                 val localBackup = File("x_backup.db.back")
                                 localBackup.delete()
@@ -328,6 +333,16 @@ object XBackup : ModInitializer {
                                     )
                                 )
                                 playersLoggedOnSinceLastBackup = false
+                                if (config.remoteConfig.enabled && config.remoteConfig.syncOnBackup) {
+                                    RemoteSyncService.syncToRemote(
+                                        result.backId,
+                                        I18n["message.xb.scheduled_backup"],
+                                        server.getWorldPath(LevelResource.ROOT).toAbsolutePath(),
+                                        service,
+                                        config,
+                                        server
+                                    )
+                                }
                             } else {
                                 if (result.message == "EMPTY_BACKUP") {
                                     log.info("Scheduled backup cancelled: No changes detected.")
@@ -506,5 +521,36 @@ object XBackup : ModInitializer {
                 isBusy = false
             }
         }
+    }
+
+    fun startProgressTracker(taskName: String): Job {
+        return service.launch(Dispatchers.IO) {
+            val startTime = System.currentTimeMillis()
+            delay(10000)
+            while (isActive && isBusy) {
+                val elapsed = (System.currentTimeMillis() - startTime) / 1000
+                val totalBytes = service.totalBytesToProcess.get()
+                val processed = service.processedBytes.get()
+                val totalFiles = service.totalFilesToProcess.get()
+                val doneFiles = service.processedFiles.get()
+
+                val percent = if (totalFiles > 0) (doneFiles * 100 / totalFiles) else 0
+                val processedStr = sizeToString(processed)
+                val totalStr = sizeToString(totalBytes)
+
+                server?.broadcast(
+                    Component.literal("$taskName Progress: $percent% ($processedStr / $totalStr) // Time elapsed: ${elapsed}s")
+                )
+
+                delay(config.progressLogInterval.coerceAtLeast(1) * 1000L)
+            }
+        }
+    }
+
+    private fun sizeToString(bytes: Long): String {
+        if (bytes < 1024) return "${bytes}B"
+        val exp = (Math.log(bytes.toDouble()) / Math.log(1024.0)).toInt()
+        val pre = "KMGTPE"[exp - 1] + ""
+        return String.format("%.2f%sB", bytes / Math.pow(1024.0, exp.toDouble()), pre)
     }
 }

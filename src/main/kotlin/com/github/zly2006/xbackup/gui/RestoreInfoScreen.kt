@@ -63,7 +63,6 @@ class RestoreInfoScreen(private val backup: IBackup, private val worldRoot: Path
 
     private fun reopenWorld() {
         val client = Minecraft.getInstance()
-        client.setScreen(null)
         runCatching {
             val loader = client.createWorldOpenFlows()
             loader.openWorld(worldRoot.normalize().fileName.toString()) {

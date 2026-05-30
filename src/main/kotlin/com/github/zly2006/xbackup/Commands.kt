@@ -316,15 +316,20 @@ object Commands {
                                 it.source.server.setAutoSaving(false)
                                 XBackup.disableSaving = true
                                 try {
-                                    val result = XBackup.service.createBackup(
-                                        path,
-                                        "$comment by ${it.source.textName}",
-                                        temporary = false,
-                                        buildJsonObject {
-                                            put("mod_ver", XBackup.MOD_VERSION)
-                                            put("source", it.source.textName)
-                                        }
-                                    )
+                                    val progressJob = XBackup.startProgressTracker("Backup")
+                                    val result = try {
+                                        XBackup.service.createBackup(
+                                            path,
+                                            "$comment by ${it.source.textName}",
+                                            temporary = false,
+                                            buildJsonObject {
+                                                put("mod_ver", XBackup.MOD_VERSION)
+                                                put("source", it.source.textName)
+                                            }
+                                        )
+                                    } finally {
+                                        progressJob.cancel()
+                                    }
                                     if (result.success) {
                                         it.source.server.broadcast(
                                             Utils.translate(
@@ -334,6 +339,16 @@ object Commands {
                                             )
                                         )
                                         XBackup.playersLoggedOnSinceLastBackup = false
+                                        if (XBackup.config.remoteConfig.enabled && XBackup.config.remoteConfig.syncOnBackup) {
+                                            RemoteSyncService.syncToRemote(
+                                                result.backId,
+                                                "$comment by ${it.source.textName}",
+                                                path,
+                                                XBackup.service,
+                                                XBackup.config,
+                                                it.source.server
+                                            )
+                                        }
                                     } else {
                                         if (result.message == "EMPTY_BACKUP") {
                                             it.source.sendFailure(Utils.translate("command.xb.backup_cancelled_empty"))
@@ -609,6 +624,21 @@ object Commands {
                             )
                         )
                         1
+                    }
+                }
+                literal("remote-url-set") {
+                    argument("url", StringArgumentType.greedyString()) {
+                        requires = checkPermission("x_backup.remote_url_set")
+                        executes {
+                            val url = StringArgumentType.getString(it, "url")
+                            XBackup.config.remoteConfig.remoteUrl = url
+                            XBackup.config.remoteConfig.enabled = url.isNotEmpty()
+                            XBackup.saveConfig()
+                            it.source.send(
+                                Component.literal("Successfully set remote URL to: $url").withStyle(ChatFormatting.GREEN)
+                            )
+                            1
+                        }
                     }
                 }
                 literal("prune") {
