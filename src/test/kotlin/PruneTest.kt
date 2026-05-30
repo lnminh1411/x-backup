@@ -2,6 +2,8 @@
 import com.github.zly2006.xbackup.Config
 import kotlinx.serialization.json.Json
 import org.junit.Test
+import java.util.TimeZone
+import java.util.Locale
 import kotlin.test.assertEquals
 
 class PruneTest {
@@ -9,16 +11,25 @@ class PruneTest {
 
     @Test
     fun test() {
-        assertEquals(431, Config.PruneConfig().apply {
-            enabled = true
-        }.prune(data, 1733025063000).size)
-        val prune = Config.PruneConfig().apply {
-            enabled = true
-        }.prune(data, 1733025063000)
-        data.toMutableMap().also {
-            prune.forEach { id -> it.remove(id) }
-        }.let {
-            println(it)
+        val originalTz = TimeZone.getDefault()
+        val originalLocale = Locale.getDefault()
+        TimeZone.setDefault(TimeZone.getTimeZone("Asia/Shanghai"))
+        Locale.setDefault(Locale.CHINA)
+        try {
+            assertEquals(464, Config.PruneConfig().apply {
+                enabled = true
+            }.prune(data, 1733025063000).size)
+            val prune = Config.PruneConfig().apply {
+                enabled = true
+            }.prune(data, 1733025063000)
+            data.toMutableMap().also {
+                prune.forEach { id -> it.remove(id) }
+            }.let {
+                println(it)
+            }
+        } finally {
+            TimeZone.setDefault(originalTz)
+            Locale.setDefault(originalLocale)
         }
     }
 }

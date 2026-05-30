@@ -1,3 +1,10 @@
+## 1.2.0
+- Replaced MD5 hashing algorithm with BLAKE3 using Apache Commons Codec, generating 32-byte (64-char hex) checksums for backup deduplication and verification.
+- Added automatic detection and migration for legacy MD5 and GZIP/ZIP databases, renaming them (along with any matching WAL/SHM SQLite journal files) to `.legacy` to prevent conflicts.
+- Added configuration toggles and YACL GUI options for chat notifications: `"Broadcast backup in chat"` and `"Only broadcast to OP"`.
+- Improved error handling in retry loops; transient exceptions (like file changes mid-copy) are logged as warnings and retried, while fatal exceptions abort clean.
+- Fixed a `NoClassDefFoundError` by configuring ShadowJar to include and relocate the `commons-codec` dependency correctly.
+
 ## 1.1.2
 - Replaced custom GFS Keep Policy string map with standard integer configuration fields (Keep Last, Keep Daily, Keep Weekly, Keep Monthly) in both the model and YACL GUI.
 - Added detailed explanation and context for temporary backups under the "Temporary Backup Expiry" option in the YACL configuration GUI.

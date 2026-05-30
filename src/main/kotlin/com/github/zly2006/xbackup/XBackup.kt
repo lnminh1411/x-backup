@@ -43,7 +43,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.1.2"
+    const val MOD_VERSION = "1.2.0"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -69,6 +69,7 @@ object XBackup : ModInitializer {
     var disableSaving = false
     var disableWatchdog = false
     var playersLoggedOnSinceLastBackup = false
+    var lastBackupAttemptTime = 0L
 
     enum class BackgroundState {
         IDLE, UNKNOWN, SCHEDULED_BACKUP, PRUNING, STOPPED
@@ -250,7 +251,11 @@ object XBackup : ModInitializer {
                 }
                 if (config.backupInterval > 0) {
                     backgroundState = BackgroundState.SCHEDULED_BACKUP
-                    if (backup == null || (System.currentTimeMillis() - backup.created) / 1000 > config.backupInterval) {
+                    val now = System.currentTimeMillis()
+                    if (now - lastBackupAttemptTime < 300_000) {
+                        continue
+                    }
+                    if (backup == null || (now - backup.created) / 1000 > config.backupInterval) {
                         if (config.pauseAutomaticBackupsWithoutPlayers) {
                             val playersOnline = server.playerList.playerCount > 0
                             if (playersOnline) {
@@ -264,6 +269,7 @@ object XBackup : ModInitializer {
                         }
                         try {
                             isBusy = true
+                            lastBackupAttemptTime = System.currentTimeMillis()
                             withContext(server.asCoroutineDispatcher()) {
                                 server.broadcast(Utils.translate("message.xb.running_scheduled_backup"))
                                 server.save()
@@ -320,7 +326,10 @@ object XBackup : ModInitializer {
                                     log.error("Scheduled backup failed: ${result.message}")
                                 }
                             }
-                        } catch (e: Exception) {
+                        } catch (e: Throwable) {
+                            if (e is CancellationException) {
+                                throw e
+                            }
                             log.error("Crontab backup failed", e)
                         } finally {
                             isBusy = false
@@ -384,24 +393,33 @@ object XBackup : ModInitializer {
         val dbFile = worldPath.resolve("x_backup.db").toFile()
         if (!dbFile.exists()) return
 
+        var isLegacy = false
         try {
-            java.sql.DriverManager.getConnection("jdbc:sqlite:${dbFile.absolutePath}").use { conn ->
-                val meta = conn.metaData
-                val tables = meta.getTables(null, null, "backup_entries", null)
-                if (tables.next()) {
-                    conn.createStatement().use { stmt ->
+            val dataSource = SQLiteDataSource().apply {
+                url = "jdbc:sqlite:${dbFile.absolutePath}"
+            }
+            dataSource.connection.use { conn ->
+                conn.createStatement().use { stmt ->
+                    var hasTable = false
+                    stmt.executeQuery("SELECT name FROM sqlite_master WHERE type='table' AND name='backup_entries'").use { rs ->
+                        if (rs.next()) {
+                            hasTable = true
+                        }
+                    }
+                    if (hasTable) {
                         stmt.executeQuery("SELECT COUNT(*) FROM backup_entries WHERE compress = 1 OR compress = 2").use { rs ->
                             if (rs.next() && rs.getInt(1) > 0) {
-                                log.warn("[X Backup] Legacy backups using GZIP/ZIP detected in database. Renaming database to preserve compatibility for downgrade.")
-                                conn.close()
-                                val legacyFile = worldPath.resolve("x_backup.db.legacy").toFile()
-                                if (legacyFile.exists()) {
-                                    legacyFile.delete()
-                                }
-                                if (dbFile.renameTo(legacyFile)) {
-                                    log.info("[X Backup] Successfully renamed legacy database to x_backup.db.legacy")
-                                } else {
-                                    log.error("[X Backup] Failed to rename legacy database!")
+                                isLegacy = true
+                            }
+                        }
+                        if (!isLegacy) {
+                            stmt.executeQuery("SELECT hash FROM backup_entries LIMIT 10").use { rs ->
+                                while (rs.next()) {
+                                    val hash = rs.getString("hash")
+                                    if (hash != null && hash.length == 32) {
+                                        isLegacy = true
+                                        break
+                                    }
                                 }
                             }
                         }
@@ -410,6 +428,32 @@ object XBackup : ModInitializer {
             }
         } catch (e: Exception) {
             log.error("[X Backup] Error checking legacy database", e)
+        }
+
+        if (isLegacy) {
+            log.warn("[X Backup] Legacy backups using MD5 or unsupported compression detected in database. Renaming database to preserve compatibility for downgrade.")
+            val legacyFile = worldPath.resolve("x_backup.db.legacy").toFile()
+            if (legacyFile.exists()) {
+                legacyFile.delete()
+            }
+            if (dbFile.renameTo(legacyFile)) {
+                log.info("[X Backup] Successfully renamed legacy database to x_backup.db.legacy")
+                // Also rename WAL/SHM files to prevent database corruption/conflicts when a new one is created
+                val walFile = worldPath.resolve("x_backup.db-wal").toFile()
+                if (walFile.exists()) {
+                    val legacyWalFile = worldPath.resolve("x_backup.db-wal.legacy").toFile()
+                    if (legacyWalFile.exists()) legacyWalFile.delete()
+                    walFile.renameTo(legacyWalFile)
+                }
+                val shmFile = worldPath.resolve("x_backup.db-shm").toFile()
+                if (shmFile.exists()) {
+                    val legacyShmFile = worldPath.resolve("x_backup.db-shm.legacy").toFile()
+                    if (legacyShmFile.exists()) legacyShmFile.delete()
+                    shmFile.renameTo(legacyShmFile)
+                }
+            } else {
+                log.error("[X Backup] Failed to rename legacy database!")
+            }
         }
     }
 

@@ -10,14 +10,20 @@ val log = LoggerFactory.getLogger("X Backup")!!
 class DontRetryException(cause: Throwable) : RuntimeException(cause)
 
 suspend inline fun <T> retry(times: Int, function: () -> T): T {
-    var lastException: Throwable? = null
+    var lastException: Exception? = null
     repeat(times) {
         try {
             return function()
         } catch (e: DontRetryException) {
             throw e.cause!!
-        } catch (e: Throwable) {
-            log.error("Error in retry, attempt ${it + 1}/$times", e)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            if (it + 1 < times) {
+                log.warn("Error in retry, attempt ${it + 1}/$times: ${e.javaClass.name}: ${e.message}. Retrying...")
+            } else {
+                log.error("Error in retry, final attempt ${it + 1}/$times failed", e)
+            }
             lastException = e
             delay(1000L shl it)
         }
@@ -26,11 +32,21 @@ suspend inline fun <T> retry(times: Int, function: () -> T): T {
 }
 
 fun InputStream.digest(algorithm: String): String = use { input ->
-    val digest = MessageDigest.getInstance(algorithm)
-    val buffer = ByteArray(8192)
-    var read: Int
-    while (input.read(buffer).also { read = it } > 0) {
-        digest.update(buffer, 0, read)
+    if (algorithm.equals("BLAKE3", ignoreCase = true)) {
+        val digest = org.apache.commons.codec.digest.Blake3.initHash()
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (input.read(buffer).also { read = it } > 0) {
+            digest.update(buffer, 0, read)
+        }
+        digest.doFinalize(32)
+    } else {
+        val digest = MessageDigest.getInstance(algorithm)
+        val buffer = ByteArray(8192)
+        var read: Int
+        while (input.read(buffer).also { read = it } > 0) {
+            digest.update(buffer, 0, read)
+        }
+        digest.digest()
     }
-    digest.digest()
 }.joinToString("") { "%02x".format(it) }

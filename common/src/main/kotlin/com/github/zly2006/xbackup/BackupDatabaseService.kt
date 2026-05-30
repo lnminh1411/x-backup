@@ -280,7 +280,7 @@ class BackupDatabaseService(
                             }
                         }
                         val shouldCompress = sourceFile.isFile && sourceFile.length() > 1024
-                        var md5 = ""
+                        var blake3 = ""
                         var zippedSize: Long
                         if (sourceFile.isFile) {
                             val beforeSize = sourceFile.length()
@@ -288,7 +288,7 @@ class BackupDatabaseService(
                             val tempBlob = blobDir.resolve(".tmp").resolve(UUID.randomUUID().toString())
                             try {
                                 tempBlob.createParentDirectories()
-                                val digest = MessageDigest.getInstance("MD5")
+                                val digest = org.apache.commons.codec.digest.Blake3.initHash()
                                 val buffer = ByteArray(DEFAULT_BUFFER_SIZE)
                                 if (shouldCompress) {
                                     this@BackupDatabaseService.wrapOutputStream(tempBlob.outputStream().buffered()).use { output ->
@@ -311,7 +311,7 @@ class BackupDatabaseService(
                                         }
                                     }
                                 }
-                                md5 = digest.digest().joinToString("") { "%02x".format(it) }
+                                blake3 = digest.doFinalize(32).joinToString("") { "%02x".format(it) }
                                 zippedSize = tempBlob.fileSize()
 
                                 val afterSize = sourceFile.length()
@@ -325,7 +325,7 @@ class BackupDatabaseService(
                                     BackupEntryTable.selectAll().where {
                                         BackupEntryTable.path eq path.toString() and
                                                 (BackupEntryTable.isDirectory eq sourceFile.isDirectory) and
-                                                (BackupEntryTable.hash eq md5)
+                                                (BackupEntryTable.hash eq blake3)
                                     }.map { it.toBackupEntry() }.firstOrNull {
                                         it.valid(this@BackupDatabaseService)
                                     }
@@ -334,7 +334,7 @@ class BackupDatabaseService(
                                     return@retry it
                                 }
 
-                                val blob = getBlobFile(md5)
+                                val blob = getBlobFile(blake3)
                                 if (blob.exists() && blob.fileSize() == zippedSize) {
                                     tempBlob.deleteIfExists()
                                 } else {
@@ -362,7 +362,7 @@ class BackupDatabaseService(
                                 it[this.size] = sourceFile.length()
                                 it[this.lastModified] = sourceFile.lastModified()
                                 it[this.isDirectory] = sourceFile.isDirectory
-                                it[this.hash] = md5
+                                it[this.hash] = blake3
                                 it[this.zippedSize] = zippedSize
                                 it[this.compress] = if (shouldCompress) {
                                     if (this@BackupDatabaseService.config.compressionAlgorithm == Config.CompressionAlgorithm.LZ4) 4 else 3
@@ -534,9 +534,9 @@ class BackupDatabaseService(
                                         it.copyTo(output)
                                     }
                                 }
-                                val checkAgain =
-                                    MessageDigest.getInstance("MD5").digest(path.toFile().inputStream().readBytes())
-                                        .joinToString("") { "%02x".format(it) }
+                                val hasher = org.apache.commons.codec.digest.Blake3.initHash()
+                                hasher.update(path.toFile().inputStream().readBytes())
+                                val checkAgain = hasher.doFinalize(32).joinToString("") { "%02x".format(it) }
                                 if (checkAgain != it.value.hash) {
                                     val decompressedStream = when (it.value.compress) {
                                         1 -> net.jpountz.lz4.LZ4BlockInputStream(blob.toFile().inputStream().buffered())
@@ -544,12 +544,13 @@ class BackupDatabaseService(
                                         else -> blob.toFile().inputStream().buffered()
                                     }
                                     val bytes = decompressedStream.use { stream -> stream.readBytes() }
-                                    val expectedMd5 = MessageDigest.getInstance("MD5").digest(bytes)
-                                        .joinToString("") { "%02x".format(it) }
+                                    val hasherExpected = org.apache.commons.codec.digest.Blake3.initHash()
+                                    hasherExpected.update(bytes)
+                                    val expectedBlake3 = hasherExpected.doFinalize(32).joinToString("") { "%02x".format(it) }
                                     log.error(
-                                        "File hash mismatch, file: $path, expected: ${it.value.hash}, actual: $checkAgain, decompressed: $expectedMd5" +
-                                                if (it.value.hash == expectedMd5 && expectedMd5 != checkAgain) " (writing file failed?)"
-                                                else if (it.value.hash != expectedMd5 && expectedMd5 == checkAgain) " (bad md5 when creating backup?)"
+                                        "File hash mismatch, file: $path, expected: ${it.value.hash}, actual: $checkAgain, decompressed: $expectedBlake3" +
+                                                if (it.value.hash == expectedBlake3 && expectedBlake3 != checkAgain) " (writing file failed?)"
+                                                else if (it.value.hash != expectedBlake3 && expectedBlake3 == checkAgain) " (bad blake3 when creating backup?)"
                                                 else " (WTF???)"
                                     )
                                     path.writeBytes(bytes)
@@ -637,16 +638,17 @@ class BackupDatabaseService(
                 input.close()
             }
         }
-        val md5 = MessageDigest.getInstance("MD5").digest(stream.toByteArray())
-            .joinToString("") { "%02x".format(it) }
-        val file = getBlobFile(md5)
+        val hasher = org.apache.commons.codec.digest.Blake3.initHash()
+        hasher.update(stream.toByteArray())
+        val blake3 = hasher.doFinalize(32).joinToString("") { "%02x".format(it) }
+        val file = getBlobFile(blake3)
         if (!file.exists()) {
             file.createParentDirectories().createFile()
             withContext(Dispatchers.IO) {
                 stream.writeTo(file.outputStream())
             }
         }
-        return md5
+        return blake3
     }
 
     suspend fun packBackup(backup: Backup) {

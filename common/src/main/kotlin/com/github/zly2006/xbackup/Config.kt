@@ -191,5 +191,11 @@ class Config {
 
     @SerialName("discard_empty_backups")
     var discardEmptyBackups = true
+
+    @SerialName("broadcast_backup_in_chat")
+    var broadcastBackupInChat = false
+
+    @SerialName("only_broadcast_to_op")
+    var onlyBroadcastToOp = true
 }
 

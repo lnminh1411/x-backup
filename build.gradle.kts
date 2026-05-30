@@ -171,7 +171,7 @@ tasks {
         exclude("com/google/gson/**")
         exclude("org/slf4j/**")
         exclude("_COROUTINE/**")
-        exclude("org/apache/commons/**")
+        exclude("org/apache/commons/io/**", "org/apache/commons/lang3/**", "org/apache/commons/lang/**", "org/apache/commons/logging/**")
         val sqliteNativeIgnore = listOf(
             "FreeBSD",
             "Linux-Android",

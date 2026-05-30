@@ -8,6 +8,9 @@ import net.minecraft.network.chat.Component
 import net.minecraft.world.level.storage.LevelResource
 import net.minecraft.world.level.dimension.DimensionType
 import java.nio.file.Path
+import net.minecraft.server.level.ServerPlayer
+import net.minecraft.server.permissions.PermissionLevel
+import net.minecraft.server.permissions.Permission
 
 @Suppress("NOTHING_TO_INLINE")
 object Utils {
@@ -44,7 +47,32 @@ object Utils {
     }
 
     inline fun MinecraftServer.broadcast(text: Component) {
-        playerList.broadcastSystemMessage(text, false)
+        val config = XBackup.config
+        if (config.broadcastBackupInChat) {
+            if (config.onlyBroadcastToOp) {
+                playerList.players.forEach { player ->
+                    val source = player.createCommandSourceStack()
+                    val isOp = try {
+                        me.lucko.fabric.api.permissions.v0.Permissions.check(source, "x_backup.broadcast", config.operatorPermissionLevel)
+                    } catch (_: NoClassDefFoundError) {
+                        val permission = when {
+                            config.operatorPermissionLevel <= 0 -> null
+                            config.operatorPermissionLevel <= 1 -> PermissionLevel.MODERATORS
+                            config.operatorPermissionLevel <= 2 -> PermissionLevel.GAMEMASTERS
+                            config.operatorPermissionLevel <= 3 -> PermissionLevel.ADMINS
+                            else -> PermissionLevel.OWNERS
+                        }
+                        permission == null || source.permissions().hasPermission(Permission.HasCommandLevel(permission))
+                    }
+                    if (isOp) {
+                        player.sendSystemMessage(text)
+                    }
+                }
+            } else {
+                playerList.broadcastSystemMessage(text, false)
+            }
+        }
+        XBackup.log.info(text.string)
     }
 
     fun isFileInWorld(world: ServerLevel, p: Path): Boolean {
