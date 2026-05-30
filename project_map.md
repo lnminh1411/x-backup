@@ -59,12 +59,12 @@ graph TD
         *   Hooks into server startup (`SERVER_STARTED`) to initialize the database and Database Service.
         *   Spins up the background auto-backup crontab coroutine thread.
         *   Enforces dynamic config updates for backup storage paths at runtime without requiring a server restart.
-        *   *Database Migration*: Automatically checks for legacy MD5-era and GZIP/ZIP databases on startup and renames them to `x_backup.db.legacy` (along with any associated `-wal` and `-shm` files) to prevent conflicts and ensure safety.
+        *   *Database Migration*: Automatically checks for legacy MD5-era and GZIP/ZIP databases on startup and renames them to `x_backup.db.legacy` (along with any associated `-wal` and `-shm` files) to prevent conflicts and ensure safety. Scans both the main database inside the world folder and all snapshot databases inside the `xb.backups/` directory.
         *   *Player Activity Tracker*: Tracks player connections to pause automatic backups when no players are active (`playersLoggedOnSinceLastBackup` flag).
 *   [Commands.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/Commands.kt):
     *   **Responsibility**: Registers command dispatch trees under `/xb` (and `/mirror` if in mirror mode) using Brigadier.
     *   **Interactions**: Exposes backup creation (`/xb create`), deletion (`/xb delete`), list queries (`/xb list`), and info stats.
-        *   `/xb delete-all`: Completely wipes the database and deletes all blobs (confirm required).
+        *   `/xb delete-all`: Completely wipes the database, deletes all blobs (confirm required), and recursively deletes the `xb.backups` snapshot database directory.
         *   *Regional Restores*: `/xb restore <id> --chunk <from> <to>` reads block coordinates to isolate changes to affected `.mca`/`.mcc` region files only.
         *   *Other Commands*: Config reloading, backup checking (`check`), zipping, and manual GFS pruning.
 *   [RestartUtils.kt](file:///e:/x-backup/src/main/kotlin/com/github/zly2006/xbackup/RestartUtils.kt): Evaluates Java Runtime Management parameters to generate native restart command lists (Unix/Windows) to hot-restart the JVM.

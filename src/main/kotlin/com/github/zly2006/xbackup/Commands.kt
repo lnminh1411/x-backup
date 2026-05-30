@@ -376,6 +376,10 @@ object Commands {
                                 val blobPath = XBackup.service.blobDir
                                 blobPath.toFile().deleteRecursively()
                                 blobPath.toFile().mkdirs()
+                                val xbBackupsDir = File("xb.backups")
+                                if (xbBackupsDir.exists()) {
+                                    xbBackupsDir.deleteRecursively()
+                                }
                                 it.source.send(Component.literal("All backup data has been completely deleted. A fresh database has been initialized.").withStyle(ChatFormatting.GREEN))
                             }
                             1

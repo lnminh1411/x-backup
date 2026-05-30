@@ -43,7 +43,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.2.0"
+    const val MOD_VERSION = "1.2.1"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -68,7 +68,14 @@ object XBackup : ModInitializer {
     var blockPlayerJoin = false
     var disableSaving = false
     var disableWatchdog = false
+    private var hasLoggedSkip = false
     var playersLoggedOnSinceLastBackup = false
+        set(value) {
+            field = value
+            if (value) {
+                hasLoggedSkip = false
+            }
+        }
     var lastBackupAttemptTime = 0L
 
     enum class BackgroundState {
@@ -262,7 +269,10 @@ object XBackup : ModInitializer {
                                 playersLoggedOnSinceLastBackup = true
                             }
                             if (!playersLoggedOnSinceLastBackup) {
-                                log.info("Skipping scheduled backup because no players logged on since the last backup.")
+                                if (!hasLoggedSkip) {
+                                    log.info("Skipping scheduled backup because no players logged on since the last backup.")
+                                    hasLoggedSkip = true
+                                }
                                 delay(10000)
                                 continue
                             }
@@ -389,10 +399,8 @@ object XBackup : ModInitializer {
         return count
     }
 
-    fun checkAndMigrateLegacyDatabase(worldPath: Path) {
-        val dbFile = worldPath.resolve("x_backup.db").toFile()
-        if (!dbFile.exists()) return
-
+    private fun checkAndMigrateSingleDatabase(dbFile: File) {
+        val parentDir = dbFile.parentFile
         var isLegacy = false
         try {
             val dataSource = SQLiteDataSource().apply {
@@ -427,32 +435,51 @@ object XBackup : ModInitializer {
                 }
             }
         } catch (e: Exception) {
-            log.error("[X Backup] Error checking legacy database", e)
+            log.error("[X Backup] Error checking legacy database: ${dbFile.absolutePath}", e)
         }
 
         if (isLegacy) {
-            log.warn("[X Backup] Legacy backups using MD5 or unsupported compression detected in database. Renaming database to preserve compatibility for downgrade.")
-            val legacyFile = worldPath.resolve("x_backup.db.legacy").toFile()
+            log.warn("[X Backup] Legacy backups using MD5 or unsupported compression detected in database: ${dbFile.absolutePath}. Renaming database to preserve compatibility for downgrade.")
+            val legacyFile = parentDir.resolve("x_backup.db.legacy")
             if (legacyFile.exists()) {
                 legacyFile.delete()
             }
             if (dbFile.renameTo(legacyFile)) {
-                log.info("[X Backup] Successfully renamed legacy database to x_backup.db.legacy")
+                log.info("[X Backup] Successfully renamed legacy database to ${legacyFile.name}")
                 // Also rename WAL/SHM files to prevent database corruption/conflicts when a new one is created
-                val walFile = worldPath.resolve("x_backup.db-wal").toFile()
+                val walFile = parentDir.resolve("x_backup.db-wal")
                 if (walFile.exists()) {
-                    val legacyWalFile = worldPath.resolve("x_backup.db-wal.legacy").toFile()
+                    val legacyWalFile = parentDir.resolve("x_backup.db-wal.legacy")
                     if (legacyWalFile.exists()) legacyWalFile.delete()
                     walFile.renameTo(legacyWalFile)
                 }
-                val shmFile = worldPath.resolve("x_backup.db-shm").toFile()
+                val shmFile = parentDir.resolve("x_backup.db-shm")
                 if (shmFile.exists()) {
-                    val legacyShmFile = worldPath.resolve("x_backup.db-shm.legacy").toFile()
+                    val legacyShmFile = parentDir.resolve("x_backup.db-shm.legacy")
                     if (legacyShmFile.exists()) legacyShmFile.delete()
                     shmFile.renameTo(legacyShmFile)
                 }
             } else {
-                log.error("[X Backup] Failed to rename legacy database!")
+                log.error("[X Backup] Failed to rename legacy database: ${dbFile.absolutePath}")
+            }
+        }
+    }
+
+    fun checkAndMigrateLegacyDatabase(worldPath: Path) {
+        val dbFile = worldPath.resolve("x_backup.db").toFile()
+        if (dbFile.exists()) {
+            checkAndMigrateSingleDatabase(dbFile)
+        }
+
+        val xbBackupsDir = Path("xb.backups").toFile()
+        if (xbBackupsDir.exists() && xbBackupsDir.isDirectory) {
+            xbBackupsDir.listFiles()?.forEach { backupDir ->
+                if (backupDir.isDirectory) {
+                    val backupDbFile = backupDir.resolve("x_backup.db")
+                    if (backupDbFile.exists()) {
+                        checkAndMigrateSingleDatabase(backupDbFile)
+                    }
+                }
             }
         }
     }

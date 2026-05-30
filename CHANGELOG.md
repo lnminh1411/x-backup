@@ -1,3 +1,8 @@
+## 1.2.1
+- Extended the legacy MD5 and compression database migration checks to recursively scan and rename databases (along with their SQLite WAL/SHM files) stored under the `xb.backups/` snapshot directory.
+- Updated `/xb delete-all confirm` to fully clean up and delete the `./xb.backups/` snapshot directory from the instance.
+- Fixed scheduled backup log spam by adding a state check that ensures the "Skipping scheduled backup..." notice is logged exactly once per idle period.
+
 ## 1.2.0
 - Replaced MD5 hashing algorithm with BLAKE3 using Apache Commons Codec, generating 32-byte (64-char hex) checksums for backup deduplication and verification.
 - Added automatic detection and migration for legacy MD5 and GZIP/ZIP databases, renaming them (along with any matching WAL/SHM SQLite journal files) to `.legacy` to prevent conflicts.
