@@ -351,7 +351,7 @@ object Commands {
                                             filesReused = result.filesReusedCount
                                         )
                                         it.source.server.broadcast(Component.literal(finishedMsg))
-                                        XBackup.playersLoggedOnSinceLastBackup = false
+                                        XBackup.playersLoggedOnSinceLastBackup = it.source.server.playerList.playerCount > 0
                                         if (XBackup.config.remoteConfig.enabled && XBackup.config.remoteConfig.syncOnBackup) {
                                             RemoteSyncService.syncToRemote(
                                                 result.backId,
@@ -365,7 +365,7 @@ object Commands {
                                     } else {
                                         if (result.message == "EMPTY_BACKUP") {
                                             it.source.sendFailure(Utils.translate("command.xb.backup_cancelled_empty"))
-                                            XBackup.playersLoggedOnSinceLastBackup = false
+                                            XBackup.playersLoggedOnSinceLastBackup = it.source.server.playerList.playerCount > 0
                                         } else {
                                             it.source.sendFailure(Component.literal("Backup failed: ${result.message}"))
                                         }

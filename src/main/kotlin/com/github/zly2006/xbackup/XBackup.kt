@@ -354,7 +354,7 @@ object XBackup : ModInitializer {
                                     filesReused = result.filesReusedCount
                                 )
                                 server.broadcast(Component.literal(finishedMsg))
-                                playersLoggedOnSinceLastBackup = false
+                                playersLoggedOnSinceLastBackup = server.playerList.playerCount > 0
                                 if (config.remoteConfig.enabled && config.remoteConfig.syncOnBackup) {
                                     RemoteSyncService.syncToRemote(
                                         result.backId,
@@ -368,7 +368,7 @@ object XBackup : ModInitializer {
                             } else {
                                 if (result.message == "EMPTY_BACKUP") {
                                     log.info("Scheduled backup cancelled: No changes detected.")
-                                    playersLoggedOnSinceLastBackup = false
+                                    playersLoggedOnSinceLastBackup = server.playerList.playerCount > 0
                                 } else {
                                     log.error("Scheduled backup failed: ${result.message}")
                                 }
