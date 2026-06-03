@@ -128,6 +128,14 @@ object Utils {
             } catch (_: Exception) {}
         }
         
+        var totalBackupSizeStr = "N/A"
+        if (server != null) {
+            try {
+                val totalBackupBytes = XBackup.service.blobDir.toFile().walk().filter { it.isFile }.sumOf { it.length() }
+                totalBackupSizeStr = sizeToString(totalBackupBytes)
+            } catch (_: Exception) {}
+        }
+        
         val tkStr = timeTakenMillis?.let { String.format(java.util.Locale.US, "%.2f", it / 1000.0) } ?: "N/A"
         val tkMsStr = timeTakenMillis?.toString() ?: "N/A"
         
@@ -159,6 +167,7 @@ object Utils {
             .replace("%DM%", systemDiskUsedStr)
             .replace("%DB%", compressedSize?.let { sizeToString(it) } ?: "N/A")
             .replace("%DP%", totalSize?.let { sizeToString(it) } ?: "N/A")
+            .replace("%DS%", totalBackupSizeStr)
             .replace("%FT%", filesTotal?.toString() ?: "N/A")
             .replace("%FC%", filesChanged?.toString() ?: "N/A")
             .replace("%FR%", filesReused?.toString() ?: "N/A")

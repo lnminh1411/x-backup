@@ -8,15 +8,30 @@ import dev.isxander.yacl3.api.controller.EnumControllerBuilder
 import dev.isxander.yacl3.api.controller.IntegerSliderControllerBuilder
 import com.github.zly2006.xbackup.XBackup
 import com.github.zly2006.xbackup.Config
+import com.github.zly2006.xbackup.network.ConfigSavePayload
+import net.fabricmc.fabric.api.client.networking.v1.ClientPlayNetworking
 import net.minecraft.client.Minecraft
 import net.minecraft.client.gui.screens.Screen
 import net.minecraft.network.chat.Component
+import net.minecraft.ChatFormatting
+import net.minecraft.server.permissions.PermissionLevel
+import net.minecraft.server.permissions.Permission
 
 object ConfigGui {
     fun createScreen(parent: Screen): Screen {
         val mc = Minecraft.getInstance()
-        val connection = mc.connection
-        val isAllowed = mc.level == null || mc.isLocalServer || (connection != null && connection.commands.root.getChild("xb") != null)
+        val config = XBackup.config
+        val currentLevel = (1..4).firstOrNull { level ->
+            val perm = when {
+                level <= 0 -> null
+                level <= 1 -> PermissionLevel.MODERATORS
+                level <= 2 -> PermissionLevel.GAMEMASTERS
+                level <= 3 -> PermissionLevel.ADMINS
+                else -> PermissionLevel.OWNERS
+            }
+            perm != null && mc.player?.permissions()?.hasPermission(Permission.HasCommandLevel(perm)) == false
+        }?.minus(1) ?: 4
+        val isAllowed = mc.level == null || mc.isLocalServer || (mc.player != null && currentLevel >= config.operatorPermissionLevel)
 
         if (!isAllowed) {
             return YetAnotherConfigLib.createBuilder()
@@ -25,7 +40,7 @@ object ConfigGui {
                     .name(Component.literal("Access Denied"))
                     .option(Option.createBuilder<Boolean>()
                         .name(Component.literal("Access Denied"))
-                        .description(OptionDescription.of(Component.literal("Only server operators (OPs) can view or modify the backup config on multiplayer servers.")))
+                        .description(OptionDescription.of(Component.literal("You don't have permission to access the config of this mod on this server")))
                         .binding(false, { false }, {})
                         .controller { opt -> TickBoxControllerBuilder.create(opt) }
                         .build())
@@ -34,11 +49,21 @@ object ConfigGui {
                 .generateScreen(parent)
         }
 
-        val config = XBackup.config
 
         return YetAnotherConfigLib.createBuilder()
             .title(Component.literal("X Backup Configuration"))
-            .save { XBackup.saveConfig() }
+            .save {
+                if (mc.level == null || mc.isLocalServer) {
+                    XBackup.saveConfig()
+                } else {
+                    try {
+                        val configJson = XBackup.json.encodeToString(config)
+                        ClientPlayNetworking.send(ConfigSavePayload(configJson))
+                    } catch (e: Exception) {
+                        XBackup.log.error("Failed to send config save packet", e)
+                    }
+                }
+            }
             .category(ConfigCategory.createBuilder()
                 .name(Component.literal("General Backup"))
                 .group(OptionGroup.createBuilder()
@@ -86,8 +111,28 @@ object ConfigGui {
                 .group(OptionGroup.createBuilder()
                     .name(Component.literal("Permissions & Operators"))
                     .option(Option.createBuilder<Int>()
-                        .name(Component.literal("Operator Permission Level"))
-                        .description(OptionDescription.of(Component.literal("OP level required to execute mod commands and access this GUI in multiplayer (1-4).")))
+                        .name(Component.literal("Server Permission Required"))
+                        .description { newValue ->
+                            val baseText = "OP level required to execute mod commands and access this GUI in multiplayer (1-4)."
+                            val currentLevel = (1..4).firstOrNull { level ->
+                                val perm = when {
+                                    level <= 0 -> null
+                                    level <= 1 -> PermissionLevel.MODERATORS
+                                    level <= 2 -> PermissionLevel.GAMEMASTERS
+                                    level <= 3 -> PermissionLevel.ADMINS
+                                    else -> PermissionLevel.OWNERS
+                                }
+                                perm != null && mc.player?.permissions()?.hasPermission(Permission.HasCommandLevel(perm)) == false
+                            }?.minus(1) ?: 4
+                            if (newValue > currentLevel) {
+                                OptionDescription.of(
+                                    Component.literal("$baseText\n\n")
+                                        .append(Component.literal("Changing this field will change your access to this mod").withStyle(ChatFormatting.RED))
+                                )
+                            } else {
+                                OptionDescription.of(Component.literal(baseText))
+                            }
+                        }
                         .binding(2, { config.operatorPermissionLevel }, { config.operatorPermissionLevel = it })
                         .controller { opt -> IntegerSliderControllerBuilder.create(opt).range(1, 4).step(1) }
                         .build())
@@ -251,14 +296,14 @@ object ConfigGui {
                     .name(Component.literal("Backup Finish Messages"))
                     .option(Option.createBuilder<String>()
                         .name(Component.literal("Scheduled Backup Finished"))
-                        .description(OptionDescription.of(Component.literal("Message sent when a scheduled backup finishes. Placeholders: %ID% (backup ID), %DP% (total size), %DB% (compressed size), %FC_SZ% (new bytes), %TK% (time taken seconds), %tk% (time taken ms), %FT% (total files), %FC% (changed files), %FR% (reused files), %R%, %D%, %DM%")))
-                        .binding("Scheduled backup #%ID% finished, %DP% (%DB% after compression) +%FC_SZ% in %TK%s", { config.messageConfig.scheduledBackupFinished }, { config.messageConfig.scheduledBackupFinished = it })
+                        .description(OptionDescription.of(Component.literal("Message sent when a scheduled backup finishes. Placeholders: %ID% (backup ID), %DP% (total size), %DB% (compressed size), %DS% (total backup size on disk), %FC_SZ% (new bytes), %TK% (time taken seconds), %tk% (time taken ms), %FT% (total files), %FC% (changed files), %FR% (reused files), %R%, %D%, %DM%")))
+                        .binding("Scheduled backup #%ID% finished, %DP% (%DB% after compression, All backups: %DS%) +%FC_SZ% in %TK%s", { config.messageConfig.scheduledBackupFinished }, { config.messageConfig.scheduledBackupFinished = it })
                         .controller { opt -> StringControllerBuilder.create(opt) }
                         .build())
                     .option(Option.createBuilder<String>()
                         .name(Component.literal("Manual Backup Finished"))
-                        .description(OptionDescription.of(Component.literal("Message sent when a manual backup finishes. Placeholders: %ID% (backup ID), %PL% (player name), %DP% (total size), %DB% (compressed size), %FC_SZ% (new bytes), %TK% (time taken seconds), %tk% (time taken ms), %FT% (total files), %FC% (changed files), %FR% (reused files), %R%, %D%, %DM%")))
-                        .binding("Backup #%ID% by %PL% finished, %DP% (%DB% after compression) +%FC_SZ% in %TK%s", { config.messageConfig.manualBackupFinished }, { config.messageConfig.manualBackupFinished = it })
+                        .description(OptionDescription.of(Component.literal("Message sent when a manual backup finishes. Placeholders: %ID% (backup ID), %PL% (player name), %DP% (total size), %DB% (compressed size), %DS% (total backup size on disk), %FC_SZ% (new bytes), %TK% (time taken seconds), %tk% (time taken ms), %FT% (total files), %FC% (changed files), %FR% (reused files), %R%, %D%, %DM%")))
+                        .binding("Backup #%ID% by %PL% finished, %DP% (%DB% after compression, All backups: %DS%) +%FC_SZ% in %TK%s", { config.messageConfig.manualBackupFinished }, { config.messageConfig.manualBackupFinished = it })
                         .controller { opt -> StringControllerBuilder.create(opt) }
                         .build())
                     .build())

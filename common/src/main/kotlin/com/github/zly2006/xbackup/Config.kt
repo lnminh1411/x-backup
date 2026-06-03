@@ -178,10 +178,10 @@ class Config {
         var manualBackupStart = "%PL% is creating a backup, this may take a while..."
 
         @SerialName("scheduled_backup_finished")
-        var scheduledBackupFinished = "Scheduled backup #%ID% finished, %DP% (%DB% after compression) +%FC_SZ% in %TK%s"
+        var scheduledBackupFinished = "Scheduled backup #%ID% finished, %DP% (%DB% after compression, All backups: %DS%) +%FC_SZ% in %TK%s"
 
         @SerialName("manual_backup_finished")
-        var manualBackupFinished = "Backup #%ID% by %PL% finished, %DP% (%DB% after compression) +%FC_SZ% in %TK%s"
+        var manualBackupFinished = "Backup #%ID% by %PL% finished, %DP% (%DB% after compression, All backups: %DS%) +%FC_SZ% in %TK%s"
 
         @SerialName("backup_progress")
         var backupProgress = "%TN% Progress: %BG%% (%BD%, Files: %FB%) // Time elapsed: %TL%s"

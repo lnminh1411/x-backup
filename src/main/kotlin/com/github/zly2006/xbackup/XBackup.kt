@@ -17,10 +17,16 @@ import kotlinx.serialization.json.*
 import net.fabricmc.api.ModInitializer
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback
 import net.fabricmc.fabric.api.event.lifecycle.v1.ServerLifecycleEvents
+import net.fabricmc.fabric.api.networking.v1.PayloadTypeRegistry
 import net.fabricmc.fabric.api.networking.v1.ServerPlayConnectionEvents
+import net.fabricmc.fabric.api.networking.v1.ServerPlayNetworking
+import com.github.zly2006.xbackup.network.ConfigSyncPayload
+import com.github.zly2006.xbackup.network.ConfigSavePayload
 import net.fabricmc.loader.api.FabricLoader
 import net.minecraft.client.Minecraft
 import net.minecraft.network.protocol.game.ClientboundTabListPacket
+import net.minecraft.server.permissions.PermissionLevel
+import net.minecraft.server.permissions.Permission
 import net.minecraft.server.MinecraftServer
 import net.minecraft.commands.CommandSourceStack
 import net.minecraft.network.chat.Component
@@ -43,7 +49,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.3.0"
+    const val MOD_VERSION = "1.3.1"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -126,6 +132,41 @@ object XBackup : ModInitializer {
         runCatching {
             loadConfig()
         }
+        PayloadTypeRegistry.clientboundPlay().register(ConfigSyncPayload.TYPE, ConfigSyncPayload.CODEC)
+        PayloadTypeRegistry.serverboundPlay().register(ConfigSavePayload.TYPE, ConfigSavePayload.CODEC)
+
+        ServerPlayNetworking.registerGlobalReceiver(ConfigSavePayload.TYPE) { payload, context ->
+            val player = context.player()
+            val server = context.server()
+            val requiredLevel = config.operatorPermissionLevel
+            val permission = when {
+                requiredLevel <= 0 -> null
+                requiredLevel <= 1 -> PermissionLevel.MODERATORS
+                requiredLevel <= 2 -> PermissionLevel.GAMEMASTERS
+                requiredLevel <= 3 -> PermissionLevel.ADMINS
+                else -> PermissionLevel.OWNERS
+            }
+            val allowed = permission == null || player.permissions().hasPermission(Permission.HasCommandLevel(permission))
+            if (allowed) {
+                try {
+                    val newConfig = json.decodeFromString<Config>(payload.configJson)
+                    config = newConfig
+                    saveConfig()
+                    
+                    val syncPayload = ConfigSyncPayload(payload.configJson)
+                    server.playerList.players.forEach { p ->
+                        if (ServerPlayNetworking.canSend(p, ConfigSyncPayload.TYPE)) {
+                            ServerPlayNetworking.send(p, syncPayload)
+                        }
+                    }
+                } catch (e: Exception) {
+                    log.error("Failed to decode and save synced config", e)
+                }
+            } else {
+                log.warn("Player ${player.scoreboardName} tried to modify config without sufficient permissions")
+            }
+        }
+
         if (config.mirrorMode) {
             if (config.mirrorFrom == null) {
                 log.error("Mirror mode is enabled but mirrorFrom is not set")
@@ -143,7 +184,10 @@ object XBackup : ModInitializer {
         }
         if (System.getProperty("xb.restart") == "true") {
             val os = System.getProperty("os.name", "").lowercase()
-            if (os.contains("mac") || os.contains("nix") || os.contains("nux") || os.contains("aix")) {
+            if (os.contains("win")) {
+                ProcessBuilder(RestartUtils.generateWindowsRestartCommand())
+                    .start()
+            } else if (os.contains("mac") || os.contains("nix") || os.contains("nux") || os.contains("aix")) {
                 ProcessBuilder(RestartUtils.generateUnixRestartCommand())
                     .start()
             } else {
@@ -156,8 +200,17 @@ object XBackup : ModInitializer {
         CommandRegistrationCallback.EVENT.register(CommandRegistrationCallback { dispatcher, _, _ ->
             Commands.register(dispatcher)
         })
-        ServerPlayConnectionEvents.JOIN.register { _, _, _ ->
+        ServerPlayConnectionEvents.JOIN.register { handler, _, server ->
             playersLoggedOnSinceLastBackup = true
+            val player = handler.player
+            if (ServerPlayNetworking.canSend(player, ConfigSyncPayload.TYPE)) {
+                try {
+                    val configJson = json.encodeToString(config)
+                    ServerPlayNetworking.send(player, ConfigSyncPayload(configJson))
+                } catch (e: Exception) {
+                    log.error("Failed to send config sync packet to player", e)
+                }
+            }
         }
         ServerLifecycleEvents.SERVER_STARTING.register {
             restoring = false
