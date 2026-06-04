@@ -49,7 +49,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.3.1"
+    const val MOD_VERSION = "1.3.2"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -449,12 +449,10 @@ object XBackup : ModInitializer {
     }
 
     suspend fun prune(server: MinecraftServer): Int {
-        val backups = service.listBackups(0, Int.MAX_VALUE).filter {
-            it.created < System.currentTimeMillis() - config.pruneConfig.temporaryKeepPolicy()
-        }
+        val allBackups = service.listBackups(0, Int.MAX_VALUE)
         val latest = service.getLatestBackup()
 
-        val idToTime = backups.filter {
+        val idToTime = allBackups.filter {
             !it.temporary && it.metadata?.get("scheduled")?.jsonPrimitive?.booleanOrNull == true
         }.associate { it.id.toString() to it.created }
         val toPrune = config.pruneConfig.prune(idToTime, System.currentTimeMillis())
@@ -482,7 +480,9 @@ object XBackup : ModInitializer {
             }
         }
 
-        backups.filter { it.temporary }.forEach {
+        allBackups.filter {
+            it.temporary && it.created < System.currentTimeMillis() - config.pruneConfig.temporaryKeepPolicy()
+        }.forEach {
             service.deleteBackupInternal(it)
             count++
         }
