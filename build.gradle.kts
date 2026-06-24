@@ -1,6 +1,6 @@
 plugins {
     `maven-publish`
-    id("net.fabricmc.fabric-loom") version "1.16-SNAPSHOT"
+    id("net.fabricmc.fabric-loom") version "1.17-SNAPSHOT"
     kotlin("jvm") version "2.3.21"
     kotlin("plugin.serialization") version "2.3.21"
     id("com.gradleup.shadow") version "9.0.0"
@@ -22,10 +22,10 @@ class ModDependencies {
 
 val mod = ModData()
 val deps = ModDependencies()
-val mcVersion = "26.1.2"
+val mcVersion = "26.2"
 val mcDep = property("mod.mc_dep").toString()
 
-// MC 26.1.2 is unobfuscated — no remapping needed, use shadowJar directly
+// MC 26.2 is unobfuscated — no remapping needed, use shadowJar directly
 val jarTaskProvider = tasks.named<AbstractArchiveTask>("shadowJar")
 
 version = "${mod.version}+$mcVersion"
@@ -69,7 +69,7 @@ dependencies {
     testImplementation("org.jetbrains.kotlin:kotlin-test-junit:1.6.10")
 
     minecraft("com.mojang:minecraft:$mcVersion")
-    // MC 26.1.2 is unobfuscated — no Yarn mappings needed
+    // MC 26.2 is unobfuscated — no Yarn mappings needed
     implementation("net.fabricmc:fabric-loader:${deps["fabric_loader"]}")
     implementation("net.fabricmc:fabric-language-kotlin:${deps["kotlin_loader_version"]}")
     fapi(

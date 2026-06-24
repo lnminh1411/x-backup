@@ -49,7 +49,7 @@ class BackupsGui(private val service: BackupDatabaseService, val worldRoot: Path
             .constrain(GeoParam.BOTTOM, Constraint.relative(root[GeoParam.BOTTOM], -24.0))
 
         val back = BMStyle.Flat.button(root, Component.translatable("xb.button.back_arrow"))
-            .onPress { gui.mc().setScreen(gui.parentScreen) }
+            .onPress { gui.mc().gui.setScreen(gui.parentScreen) }
             .constrain(GeoParam.BOTTOM, Constraint.relative(listBackground!![GeoParam.TOP], -4.0))
             .constrain(GeoParam.LEFT, Constraint.match(listBackground[GeoParam.LEFT]))
             .constrain(GeoParam.WIDTH, Constraint.literal(50.0))
@@ -243,7 +243,7 @@ class BackupsGui(private val service: BackupDatabaseService, val worldRoot: Path
     companion object {
         private val DATE_TIME_FORMAT = SimpleDateFormat("EEE, d MMM yyyy HH:mm:ss")
         fun open(service: BackupDatabaseService, worldRoot: Path) {
-            Minecraft.getInstance().setScreen(ModularGuiScreen(BackupsGui(service, worldRoot)))
+            Minecraft.getInstance().gui.setScreen(ModularGuiScreen(BackupsGui(service, worldRoot)))
         }
     }
 }

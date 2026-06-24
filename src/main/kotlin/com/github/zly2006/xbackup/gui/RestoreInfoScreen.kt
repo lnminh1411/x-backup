@@ -21,7 +21,7 @@ class RestoreInfoScreen(private val backup: IBackup, private val worldRoot: Path
         )
         addRenderableWidget(
             Button.builder(Component.translatable("xb.gui.restore.close")) {
-                minecraft?.setScreen(null)
+                minecraft?.gui?.setScreen(null)
             }.bounds(width / 2 - 75, height - 28, 150, 20).build()
         )
     }
@@ -57,7 +57,7 @@ class RestoreInfoScreen(private val backup: IBackup, private val worldRoot: Path
     companion object {
         fun open(backup: IBackup, worldRoot: Path) {
             val client = Minecraft.getInstance()
-            client.execute { client.setScreen(RestoreInfoScreen(backup, worldRoot)) }
+            client.execute { client.gui.setScreen(RestoreInfoScreen(backup, worldRoot)) }
         }
     }
 
