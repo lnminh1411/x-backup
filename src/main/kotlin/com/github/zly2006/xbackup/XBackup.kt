@@ -29,6 +29,7 @@ import net.minecraft.server.permissions.PermissionLevel
 import net.minecraft.server.permissions.Permission
 import net.minecraft.server.MinecraftServer
 import net.minecraft.commands.CommandSourceStack
+import net.minecraft.ChatFormatting
 import net.minecraft.network.chat.Component
 import net.minecraft.world.level.storage.LevelResource
 import org.jetbrains.exposed.sql.Database
@@ -49,7 +50,7 @@ object XBackup : ModInitializer {
     lateinit var config: Config
     private val configPath = FabricLoader.getInstance().configDir.resolve("x-backup.config.json")
     val log = LoggerFactory.getLogger("XBackup")!!
-    const val MOD_VERSION = "1.3.2"
+    const val MOD_VERSION = "1.3.3"
     const val GIT_COMMIT = "72cc36c"
     const val COMMIT_DATE = "2026-01-12T11:45:52+08:00"
     var _service: BackupDatabaseService? = null
@@ -263,6 +264,11 @@ object XBackup : ModInitializer {
             XBackupApi.setInstance(service)
             if (!config.mirrorMode) {
                 startCrontabJob(server)
+                @OptIn(DelicateCoroutinesApi::class)
+                GlobalScope.launch {
+                    delay(5000)
+                    checkAllBackups(server)
+                }
             }
         }
         ServerLifecycleEvents.SERVER_STOPPING.register {
@@ -486,7 +492,66 @@ object XBackup : ModInitializer {
             service.deleteBackupInternal(it)
             count++
         }
+
+        checkAllBackups(server)
+
         return count
+    }
+
+    fun broadcastToAdmins(server: MinecraftServer, text: Component) {
+        val config = config
+        server.playerList.players.forEach { player ->
+            val source = player.createCommandSourceStack()
+            val isOp = try {
+                me.lucko.fabric.api.permissions.v0.Permissions.check(source, "x_backup.broadcast", config.operatorPermissionLevel)
+            } catch (_: NoClassDefFoundError) {
+                val permission = when {
+                    config.operatorPermissionLevel <= 0 -> null
+                    config.operatorPermissionLevel <= 1 -> PermissionLevel.MODERATORS
+                    config.operatorPermissionLevel <= 2 -> PermissionLevel.GAMEMASTERS
+                    config.operatorPermissionLevel <= 3 -> PermissionLevel.ADMINS
+                    else -> PermissionLevel.OWNERS
+                }
+                permission == null || source.permissions().hasPermission(Permission.HasCommandLevel(permission))
+            }
+            if (isOp) {
+                player.sendSystemMessage(text)
+            }
+        }
+        log.info(text.string)
+    }
+
+    suspend fun checkAllBackups(server: MinecraftServer) {
+        val backups = service.listBackups(0, Int.MAX_VALUE)
+        var corruptedCount = 0
+        var deletedCount = 0
+        
+        for (backup in backups) {
+            if (!service.check(backup)) {
+                corruptedCount++
+                val msg = "[X Backup] Backup #${backup.id} is corrupted! Some file blobs are missing or damaged."
+                log.error(msg)
+                broadcastToAdmins(server, Component.literal(msg).withStyle(ChatFormatting.RED))
+                
+                if (config.pruneConfig.autoDeleteCorruptedBackups) {
+                    service.deleteBackupInternal(backup)
+                    deletedCount++
+                    val delMsg = "[X Backup] Backup #${backup.id} has been automatically deleted to prevent corruption propagation."
+                    log.info(delMsg)
+                    broadcastToAdmins(server, Component.literal(delMsg).withStyle(ChatFormatting.YELLOW))
+                }
+            }
+        }
+        
+        if (corruptedCount > 0) {
+            if (config.pruneConfig.redoBackupOnCorruption) {
+                val redoMsg = "[X Backup] Triggering a new scheduled backup immediately due to detected corruption."
+                log.info(redoMsg)
+                broadcastToAdmins(server, Component.literal(redoMsg).withStyle(ChatFormatting.GREEN))
+                lastBackupAttemptTime = 0
+                playersLoggedOnSinceLastBackup = true
+            }
+        }
     }
 
     private fun checkAndMigrateSingleDatabase(dbFile: File) {
