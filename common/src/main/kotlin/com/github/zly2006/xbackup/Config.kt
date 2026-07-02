@@ -30,6 +30,12 @@ class Config {
         @SerialName("keep_temporary")
         var keepTemporary = "2d"
 
+        @SerialName("auto_delete_corrupted_backups")
+        var autoDeleteCorruptedBackups = false
+
+        @SerialName("redo_backup_on_corruption")
+        var redoBackupOnCorruption = false
+
         fun temporaryKeepPolicy(): Long {
             return keepTemporary.toMillis()
         }

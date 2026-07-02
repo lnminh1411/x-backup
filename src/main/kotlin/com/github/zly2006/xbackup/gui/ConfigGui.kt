@@ -210,6 +210,18 @@ object ConfigGui {
                         .binding(12, { config.pruneConfig.keepMonthly }, { config.pruneConfig.keepMonthly = it.coerceAtLeast(0) })
                         .controller { opt -> IntegerFieldControllerBuilder.create(opt).min(0) }
                         .build())
+                    .option(Option.createBuilder<Boolean>()
+                        .name(Component.literal("Auto-Delete Corrupted Backups"))
+                        .description(OptionDescription.of(Component.literal("Automatically delete corrupted backups from the database when detected.")))
+                        .binding(false, { config.pruneConfig.autoDeleteCorruptedBackups }, { config.pruneConfig.autoDeleteCorruptedBackups = it })
+                        .controller { opt -> TickBoxControllerBuilder.create(opt) }
+                        .build())
+                    .option(Option.createBuilder<Boolean>()
+                        .name(Component.literal("Redo Backup On Corruption"))
+                        .description(OptionDescription.of(Component.literal("Trigger a new backup immediately if any active backup is found to be corrupted.")))
+                        .binding(false, { config.pruneConfig.redoBackupOnCorruption }, { config.pruneConfig.redoBackupOnCorruption = it })
+                        .controller { opt -> TickBoxControllerBuilder.create(opt) }
+                        .build())
                     .build())
                 .build())
             .category(ConfigCategory.createBuilder()

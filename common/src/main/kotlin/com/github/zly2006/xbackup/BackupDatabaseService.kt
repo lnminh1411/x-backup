@@ -706,12 +706,18 @@ class BackupDatabaseService(
                     val op = BackupEntryTable.id inList orphanedIds
                     BackupEntryTable.deleteWhere { op }
                     
-                    // Delete blobs from disk
+                    // Delete blobs from disk, but only if the hash is not referenced by any other remaining entry
                     orphanedEntries.forEach { entry ->
-                        try {
-                            getBlobFile(entry.hash).toFile().delete()
-                        } catch (e: Exception) {
-                            log.warn("Failed to delete orphaned blob for hash ${entry.hash}: ${e.message}")
+                        val hashReferenced = BackupEntryTable
+                            .select(BackupEntryTable.id)
+                            .where { BackupEntryTable.hash eq entry.hash }
+                            .count() > 0
+                        if (!hashReferenced) {
+                            try {
+                                getBlobFile(entry.hash).toFile().delete()
+                            } catch (e: Exception) {
+                                log.warn("Failed to delete orphaned blob for hash ${entry.hash}: ${e.message}")
+                            }
                         }
                     }
                 }
